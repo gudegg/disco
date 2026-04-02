@@ -271,16 +271,11 @@ fmt.Println(port, enabled, timeout, typedConfig, c.Version())
 
 ### 监听某个配置变化
 
-你可以按 key 注册监听器。只有这个 key 的值新增、删除或发生变化时，回调才会触发：
+你可以按 key 注册监听器。只有这个 key 的值新增、删除或发生变化时，回调才会触发；回调参数就是最新值：
 
 ```go
-cancel, err := c.AddListener("db.host", func(event client.ChangeEvent) {
-    fmt.Printf(
-        "db.host changed: old=%q new=%q version=%d\n",
-        event.OldValue,
-        event.NewValue,
-        event.Version,
-    )
+cancel, err := c.AddListener("db.host", func(value string) {
+    fmt.Printf("db.host changed: %q\n", value)
 })
 if err != nil {
     panic(err)
@@ -322,7 +317,7 @@ fmt.Println(cfg.Enabled, cfg.Name)
 - `GetJSON[T](client, key)`：按泛型读取并缓存 JSON 配置
 - `MustGetJSON[T](client, key)`：按泛型读取 JSON 配置，失败时 panic
 - `Version()`：获取当前缓存版本号
-- `AddListener(key, callback)`：监听某个配置项的变化，返回取消监听函数
+- `AddListener(key, callback)`：监听某个配置项的变化，回调参数是最新值，返回取消监听函数
 - `Snapshot.Get(key)`：读取字符串配置
 - `Snapshot.DecodeJSON(key, &target)`：读取并解析 JSON 配置
 

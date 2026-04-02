@@ -92,7 +92,7 @@ type Client struct {
 	current        *Snapshot
 	jsonCache      map[string]map[reflect.Type]jsonCacheEntry
 	listenerMu     sync.RWMutex
-	listeners      map[string]map[uint64]func(ChangeEvent)
+	listeners      map[string]map[uint64]func(string)
 	nextListenerID uint64
 	watchMu        sync.Mutex
 	watching       bool
@@ -161,7 +161,7 @@ func (c *Client) MustGetString(key string) string {
 	return value
 }
 
-func (c *Client) AddListener(key string, listener func(ChangeEvent)) (func(), error) {
+func (c *Client) AddListener(key string, listener func(string)) (func(), error) {
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return nil, ErrListenerKeyRequired
@@ -174,12 +174,12 @@ func (c *Client) AddListener(key string, listener func(ChangeEvent)) (func(), er
 	defer c.listenerMu.Unlock()
 
 	if c.listeners == nil {
-		c.listeners = make(map[string]map[uint64]func(ChangeEvent))
+		c.listeners = make(map[string]map[uint64]func(string))
 	}
 	c.nextListenerID++
 	id := c.nextListenerID
 	if c.listeners[key] == nil {
-		c.listeners[key] = make(map[uint64]func(ChangeEvent))
+		c.listeners[key] = make(map[uint64]func(string))
 	}
 	c.listeners[key][id] = listener
 
@@ -332,7 +332,7 @@ func (c *Client) subscribeOnce(ctx context.Context) error {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.opts.Token)
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.streamHTTPClient().Do(req)
 	if err != nil {
 		return err
 	}
@@ -432,8 +432,8 @@ func (c *Client) removeListener(key string, id uint64) {
 
 func (c *Client) notifyListeners(oldSnapshot, newSnapshot *Snapshot) {
 	type dispatch struct {
-		callback func(ChangeEvent)
-		event    ChangeEvent
+		callback func(string)
+		value    string
 	}
 
 	c.listenerMu.RLock()
@@ -450,28 +450,17 @@ func (c *Client) notifyListeners(oldSnapshot, newSnapshot *Snapshot) {
 			continue
 		}
 
-		event := ChangeEvent{
-			Key:       key,
-			OldValue:  oldValue,
-			OldExists: oldExists,
-			NewValue:  newValue,
-			NewExists: newExists,
-		}
-		if newSnapshot != nil {
-			event.Version = newSnapshot.Version
-		}
-
 		for _, callback := range bucket {
 			dispatches = append(dispatches, dispatch{
 				callback: callback,
-				event:    event,
+				value:    newValue,
 			})
 		}
 	}
 	c.listenerMu.RUnlock()
 
 	for _, item := range dispatches {
-		item.callback(item.event)
+		item.callback(item.value)
 	}
 }
 
@@ -512,6 +501,15 @@ func getSnapshotValue(snapshot *Snapshot, key string) (string, bool) {
 		return "", false
 	}
 	return snapshot.Get(key)
+}
+
+func (c *Client) streamHTTPClient() *http.Client {
+	if c.httpClient == nil {
+		return &http.Client{}
+	}
+	cloned := *c.httpClient
+	cloned.Timeout = 0
+	return &cloned
 }
 
 func GetJSON[T any](c *Client, key string) (T, error) {

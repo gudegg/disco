@@ -250,9 +250,9 @@ func TestClientAddListener(t *testing.T) {
 		t.Fatalf("new client failed: %v", err)
 	}
 
-	var events []ChangeEvent
-	cancel, err := client.AddListener("app.name", func(event ChangeEvent) {
-		events = append(events, event)
+	var values []string
+	cancel, err := client.AddListener("app.name", func(value string) {
+		values = append(values, value)
 	})
 	if err != nil {
 		t.Fatalf("AddListener() error = %v", err)
@@ -300,17 +300,17 @@ func TestClientAddListener(t *testing.T) {
 		},
 	})
 
-	if len(events) != 3 {
-		t.Fatalf("listener events = %d, want 3", len(events))
+	if len(values) != 3 {
+		t.Fatalf("listener values = %d, want 3", len(values))
 	}
-	if events[0].OldExists || !events[0].NewExists || events[0].NewValue != "demo" || events[0].Version != 1 {
-		t.Fatalf("first event = %+v", events[0])
+	if values[0] != "demo" {
+		t.Fatalf("first value = %q, want demo", values[0])
 	}
-	if events[1].OldValue != "demo" || events[1].NewValue != "demo-v2" || events[1].Version != 3 {
-		t.Fatalf("second event = %+v", events[1])
+	if values[1] != "demo-v2" {
+		t.Fatalf("second value = %q, want demo-v2", values[1])
 	}
-	if !events[2].OldExists || events[2].NewExists || events[2].OldValue != "demo-v2" || events[2].Version != 4 {
-		t.Fatalf("third event = %+v", events[2])
+	if values[2] != "" {
+		t.Fatalf("third value = %q, want empty string", values[2])
 	}
 }
 
@@ -325,7 +325,7 @@ func TestClientAddListenerValidation(t *testing.T) {
 		t.Fatalf("new client failed: %v", err)
 	}
 
-	if _, err := client.AddListener("", func(ChangeEvent) {}); !errors.Is(err, ErrListenerKeyRequired) {
+	if _, err := client.AddListener("", func(string) {}); !errors.Is(err, ErrListenerKeyRequired) {
 		t.Fatalf("AddListener(empty) error = %v, want %v", err, ErrListenerKeyRequired)
 	}
 	if _, err := client.AddListener("app.name", nil); !errors.Is(err, ErrListenerRequired) {
@@ -440,6 +440,27 @@ func TestClientStartRejectsSecondWatcher(t *testing.T) {
 
 	if err := client.Start(context.Background()); !errors.Is(err, ErrWatcherAlreadyStarted) {
 		t.Fatalf("Start() error = %v, want %v", err, ErrWatcherAlreadyStarted)
+	}
+}
+
+func TestClientStreamHTTPClientDisablesTimeout(t *testing.T) {
+	client, err := NewLazy(Options{
+		ServerURL:  "http://example.com",
+		Service:    "order-service",
+		Env:        "prod",
+		Token:      "test-token",
+		HTTPClient: &http.Client{Timeout: 5 * time.Second},
+	})
+	if err != nil {
+		t.Fatalf("new client failed: %v", err)
+	}
+
+	streamClient := client.streamHTTPClient()
+	if streamClient.Timeout != 0 {
+		t.Fatalf("stream client timeout = %v, want 0", streamClient.Timeout)
+	}
+	if streamClient.Transport != client.httpClient.Transport {
+		t.Fatalf("stream client should reuse original transport")
 	}
 }
 
