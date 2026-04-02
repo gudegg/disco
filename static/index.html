@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>配置中心</title>
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/element-plus/dist/index.full.js"></script>
+    <script src="https://unpkg.com/@element-plus/icons-vue"></script>
+    <!-- Monaco Editor -->
+    <script src="https://unpkg.com/monaco-editor@0.44.0/min/vs/loader.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; }
+        .login-container { height: 100vh; display: flex; align-items: center; justify-content: center; }
+        .login-box { width: 400px; padding: 40px; background: #fff; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
+        .login-title { text-align: center; font-size: 24px; font-weight: bold; margin-bottom: 30px; color: #303133; }
+        .main-container { min-height: 100vh; }
+        .header { background: #fff; padding: 0 20px; height: 60px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
+        .header-title { font-size: 20px; font-weight: bold; color: #409eff; }
+        .content { padding: 20px; max-width: 1400px; margin: 0 auto; }
+        .card { background: #fff; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.05); }
+        .card-title { font-size: 16px; font-weight: bold; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid #ebeef5; }
+        .toolbar { margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap; }
+        .type-tag { margin-right: 5px; }
+        .json-editor-wrapper { width: 100%; min-width: 0; }
+        .json-editor { height: 300px; border: 1px solid #dcdfe6; border-radius: 4px; width: 100%; min-width: 0; overflow: hidden; }
+        .json-editor-error { border-color: #f56c6c; }
+        .editor-toolbar { margin-bottom: 10px; display: flex; gap: 10px; flex-wrap: wrap; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <!-- 登录页面 -->
+        <div v-if="!isLoggedIn" class="login-container">
+            <div class="login-box">
+                <div class="login-title">配置中心</div>
+                <el-form :model="loginForm" :rules="loginRules" ref="loginRef">
+                    <el-form-item prop="username">
+                        <el-input v-model="loginForm.username" placeholder="用户名" prefix-icon="User" size="large"></el-input>
+                    </el-form-item>
+                    <el-form-item prop="password">
+                        <el-input v-model="loginForm.password" type="password" placeholder="密码" prefix-icon="Lock" size="large" @keyup.enter="handleLogin"></el-input>
+                    </el-form-item>
+                    <el-form-item>
+                        <el-button type="primary" size="large" style="width: 100%" :loading="loading" @click="handleLogin">登录</el-button>
+                    </el-form-item>
+                </el-form>
+            </div>
+        </div>
+
+        <!-- 主页面 -->
+        <div v-else class="main-container">
+            <div class="header">
+                <div class="header-title">配置中心</div>
+                <div>
+                    <el-button type="primary" size="small" @click="showChangePassword = true" :icon="Key">修改密码</el-button>
+                    <span style="margin: 0 15px; color: #606266;">{{ username }}</span>
+                    <el-button type="danger" size="small" @click="logout">退出</el-button>
+                </div>
+            </div>
+            
+            <div class="content">
+                <!-- 服务管理 -->
+                <div class="card">
+                    <div class="card-title">服务管理</div>
+                    <div class="toolbar">
+                        <el-button type="primary" @click="showAddService = true" :icon="Plus">添加服务</el-button>
+                    </div>
+                    <el-table :data="services" border style="width: 100%">
+                        <el-table-column prop="id" label="ID" width="80"></el-table-column>
+                        <el-table-column prop="name" label="服务名称"></el-table-column>
+                        <el-table-column prop="description" label="描述"></el-table-column>
+                        <el-table-column label="操作" width="200">
+                            <template #default="scope">
+                                <el-button type="primary" size="small" @click="manageToken(scope.row)">Token管理</el-button>
+                                <el-button type="danger" size="small" @click="deleteService(scope.row)">删除</el-button>
+                            </template>
+                        </el-table-column>
+                    </el-table>
+                </div>
+
+                <!-- 配置管理 -->
+                <div class="card">
+                    <div class="card-title">配置管理</div>
+                    <div class="toolbar">
+                        <el-select v-model="selectedService" placeholder="选择服务" style="width: 200px" @change="onServiceChange">
+                            <el-option v-for="s in services" :key="s.id" :label="s.name" :value="s.name"></el-option>
+                        </el-select>
+                        <el-select v-model="selectedEnv" placeholder="选择环境" style="width: 150px" :disabled="!selectedService" @change="loadConfigs">
+                            <el-option v-for="env in envs" :key="env" :label="env" :value="env"></el-option>
+                        </el-select>
+                        <el-button type="primary" @click="showAddConfig = true" :disabled="!selectedService || !selectedEnv" :icon="Plus">添加配置</el-button>
+                        <el-button @click="loadConfigs" :icon="RefreshRight">刷新</el-button>
+                    </div>
+                    <el-table :data="configs" border style="width: 100%" v-loading="configLoading">
+                        <el-table-column prop="id" label="ID" width="80"></el-table-column>
+                        <el-table-column prop="key" label="Key"></el-table-column>
+                        <el-table-column prop="type" label="类型" width="100">
+                            <template #default="scope">
+                                <el-tag :type="scope.row.type === 'json' ? 'success' : ''">{{ scope.row.type }}</el-tag>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="value" label="Value">
+                            <template #default="scope">
+                                <el-tooltip :content="scope.row.value" placement="top">
+                                    <span style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block;">{{ scope.row.value }}</span>
+                                </el-tooltip>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="version" label="版本" width="80"></el-table-column>
+                        <el-table-column prop="updated_at" label="更新时间" width="180">
+                            <template #default="scope">
+                                {{ formatDate(scope.row.updated_at) }}
+                            </template>
+                        </el-table-column>
+                        <el-table-column label="操作" width="150">
+                            <template #default="scope">
+                                <el-button type="primary" size="small" @click="editConfig(scope.row)">编辑</el-button>
+                                <el-button type="danger" size="small" @click="deleteConfig(scope.row)">删除</el-button>
+                            </template>
+                        </el-table-column>
+                    </el-table>
+                </div>
+            </div>
+        </div>
+
+        <!-- 添加服务对话框 -->
+        <el-dialog v-model="showAddService" title="添加服务" width="500px">
+            <el-form :model="serviceForm" :rules="serviceRules" ref="serviceRef" label-width="80px">
+                <el-form-item label="服务名称" prop="name">
+                    <el-input v-model="serviceForm.name" placeholder="如：order-service"></el-input>
+                </el-form-item>
+                <el-form-item label="描述" prop="description">
+                    <el-input v-model="serviceForm.description" type="textarea" placeholder="服务描述"></el-input>
+                </el-form-item>
+            </el-form>
+            <template #footer>
+                <el-button @click="showAddService = false">取消</el-button>
+                <el-button type="primary" @click="addService" :loading="serviceLoading">确定</el-button>
+            </template>
+        </el-dialog>
+
+        <!-- 添加配置对话框 -->
+        <el-dialog v-model="showAddConfig" title="添加配置" width="700px" @opened="handleAddConfigOpened">
+            <el-form :model="configForm" :rules="configRules" ref="configRef" label-width="80px">
+                <el-form-item label="环境">
+                    <el-tag>{{ selectedEnv }}</el-tag>
+                </el-form-item>
+                <el-form-item label="Key" prop="key">
+                    <el-input v-model="configForm.key" placeholder="如：db.host"></el-input>
+                </el-form-item>
+                <el-form-item label="类型" prop="type">
+                    <el-radio-group v-model="configForm.type" @change="onTypeChange">
+                        <el-radio label="string">String</el-radio>
+                        <el-radio label="json">JSON</el-radio>
+                    </el-radio-group>
+                </el-form-item>
+                <el-form-item label="Value" prop="value" :error="jsonError">
+                    <!-- String 类型使用普通文本框 -->
+                    <el-input v-if="configForm.type === 'string'" v-model="configForm.value" type="textarea" :rows="6" placeholder="配置值"></el-input>
+                    <!-- JSON 类型使用 Monaco Editor -->
+                    <div v-else class="json-editor-wrapper">
+                        <div class="editor-toolbar">
+                            <el-button size="small" @click="formatJSON">格式化</el-button>
+                            <el-button size="small" @click="compressJSON">压缩</el-button>
+                            <el-tag v-if="jsonValid" type="success" size="small">JSON 格式正确</el-tag>
+                            <el-tag v-else-if="jsonError" type="danger" size="small">{{ jsonError }}</el-tag>
+                        </div>
+                        <div ref="addEditorRef" class="json-editor" :class="{ 'json-editor-error': jsonError }"></div>
+                    </div>
+                </el-form-item>
+            </el-form>
+            <template #footer>
+                <el-button @click="showAddConfig = false">取消</el-button>
+                <el-button type="primary" @click="addConfig" :loading="configAddLoading" :disabled="configForm.type === 'json' && !jsonValid">确定</el-button>
+            </template>
+        </el-dialog>
+
+        <!-- 编辑配置对话框 -->
+        <el-dialog v-model="showEditConfig" title="编辑配置" width="700px" @opened="handleEditConfigOpened">
+            <el-form :model="editForm" :rules="editRules" ref="editRef" label-width="80px">
+                <el-form-item label="Key">
+                    <el-input v-model="editForm.key" disabled></el-input>
+                </el-form-item>
+                <el-form-item label="类型" prop="type">
+                    <el-radio-group v-model="editForm.type" @change="onEditTypeChange">
+                        <el-radio label="string">String</el-radio>
+                        <el-radio label="json">JSON</el-radio>
+                    </el-radio-group>
+                </el-form-item>
+                <el-form-item label="Value" prop="value" :error="editJsonError">
+                    <!-- String 类型使用普通文本框 -->
+                    <el-input v-if="editForm.type === 'string'" v-model="editForm.value" type="textarea" :rows="6" placeholder="配置值"></el-input>
+                    <!-- JSON 类型使用 Monaco Editor -->
+                    <div v-else class="json-editor-wrapper">
+                        <div class="editor-toolbar">
+                            <el-button size="small" @click="formatEditJSON">格式化</el-button>
+                            <el-button size="small" @click="compressEditJSON">压缩</el-button>
+                            <el-tag v-if="editJsonValid" type="success" size="small">JSON 格式正确</el-tag>
+                            <el-tag v-else-if="editJsonError" type="danger" size="small">{{ editJsonError }}</el-tag>
+                        </div>
+                        <div ref="editEditorRef" class="json-editor" :class="{ 'json-editor-error': editJsonError }"></div>
+                    </div>
+                </el-form-item>
+            </el-form>
+            <template #footer>
+                <el-button @click="showEditConfig = false">取消</el-button>
+                <el-button type="primary" @click="updateConfig" :loading="configEditLoading" :disabled="editForm.type === 'json' && !editJsonValid">确定</el-button>
+            </template>
+        </el-dialog>
+
+        <!-- 修改密码对话框 -->
+        <el-dialog v-model="showChangePassword" title="修改密码" width="500px">
+            <el-form :model="passwordForm" :rules="passwordRules" ref="passwordRef" label-width="100px">
+                <el-form-item label="旧密码" prop="old_password">
+                    <el-input v-model="passwordForm.old_password" type="password" placeholder="请输入旧密码"></el-input>
+                </el-form-item>
+                <el-form-item label="新密码" prop="new_password">
+                    <el-input v-model="passwordForm.new_password" type="password" placeholder="请输入新密码（至少6位）"></el-input>
+                </el-form-item>
+            </el-form>
+            <template #footer>
+                <el-button @click="showChangePassword = false">取消</el-button>
+                <el-button type="primary" @click="changePassword" :loading="passwordLoading">确定</el-button>
+            </template>
+        </el-dialog>
+
+        <!-- Token管理对话框 -->
+        <el-dialog v-model="showTokenManager" title="Token管理" width="600px">
+            <el-form label-width="80px">
+                <el-form-item label="服务">
+                    <span>{{ currentService?.name }}</span>
+                </el-form-item>
+                <el-form-item label="环境">
+                    <el-select v-model="tokenEnv" placeholder="选择环境" style="width: 200px" @change="loadToken">
+                        <el-option v-for="env in envs" :key="env" :label="env" :value="env"></el-option>
+                    </el-select>
+                </el-form-item>
+                <el-form-item label="Token" v-if="currentToken">
+                    <el-input v-model="currentToken.token" readonly style="width: 400px">
+                        <template #append>
+                            <el-button @click="copyToken">复制</el-button>
+                        </template>
+                    </el-input>
+                </el-form-item>
+            </el-form>
+            <template #footer>
+                <el-button @click="showTokenManager = false">关闭</el-button>
+                <el-button type="warning" @click="regenerateToken" :disabled="!tokenEnv">重新生成</el-button>
+                <el-button type="primary" @click="getOrCreateToken" :disabled="!tokenEnv" :loading="tokenLoading">获取/创建</el-button>
+            </template>
+        </el-dialog>
+    </div>
+
+    <script>
+        const { createApp, ref, reactive, onMounted, watch } = Vue;
+        const { ElMessage, ElMessageBox } = ElementPlus;
+        const { Plus, RefreshRight, User, Lock, Key } = ElementPlusIconsVue;
+
+        const API_BASE = '/api';
+
+        createApp({
+            setup() {
+                // 登录相关
+                const isLoggedIn = ref(!!localStorage.getItem('token'));
+                const username = ref(localStorage.getItem('username') || '');
+                const loading = ref(false);
+                const loginRef = ref(null);
+                const loginForm = reactive({ username: '', password: '' });
+                const loginRules = {
+                    username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+                    password: [{ required: true, message: '请输入密码', trigger: 'blur' }]
+                };
+
+                // 服务管理
+                const services = ref([]);
+                const showAddService = ref(false);
+                const serviceLoading = ref(false);
+                const serviceRef = ref(null);
+                const serviceForm = reactive({ name: '', description: '' });
+                const serviceRules = {
+                    name: [{ required: true, message: '请输入服务名称', trigger: 'blur' }]
+                };
+
+                // 配置管理
+                const selectedService = ref('');
+                const selectedEnv = ref('');
+                const envs = ref(['dev', 'test', 'prod']);
+                const configs = ref([]);
+                const configLoading = ref(false);
+                const showAddConfig = ref(false);
+                const configAddLoading = ref(false);
+                const configRef = ref(null);
+                const configForm = reactive({ key: '', value: '', type: 'string' });
+                const configRules = {
+                    key: [{ required: true, message: '请输入Key', trigger: 'blur' }],
+                    value: [{ required: true, message: '请输入Value', trigger: 'blur' }],
+                    type: [{ required: true, message: '请选择类型', trigger: 'blur' }]
+                };
+
+                // 编辑配置
+                const showEditConfig = ref(false);
+                const configEditLoading = ref(false);
+                const editRef = ref(null);
+                const editForm = reactive({ id: '', key: '', value: '', type: 'string' });
+                const editRules = {
+                    value: [{ required: true, message: '请输入Value', trigger: 'blur' }],
+                    type: [{ required: true, message: '请选择类型', trigger: 'blur' }]
+                };
+
+                // Monaco Editor 相关
+                const addEditorRef = ref(null);
+                const editEditorRef = ref(null);
+                let addEditor = null;
+                let editEditor = null;
+                const jsonValid = ref(true);
+                const jsonError = ref('');
+                const editJsonValid = ref(true);
+                const editJsonError = ref('');
+
+                // 初始化 Monaco Editor
+                const initMonaco = () => {
+                    require.config({ paths: { 'vs': 'https://unpkg.com/monaco-editor@0.44.0/min/vs' }});
+                    require(['vs/editor/editor.main'], () => {
+                        // 编辑器已加载
+                    });
+                };
+
+                const layoutAddEditor = () => {
+                    if (addEditor && addEditorRef.value) {
+                        addEditor.layout({
+                            width: addEditorRef.value.clientWidth,
+                            height: addEditorRef.value.clientHeight
+                        });
+                    }
+                };
+
+                const layoutEditEditor = () => {
+                    if (editEditor && editEditorRef.value) {
+                        editEditor.layout({
+                            width: editEditorRef.value.clientWidth,
+                            height: editEditorRef.value.clientHeight
+                        });
+                    }
+                };
+
+                // 创建添加配置的编辑器
+                const createAddEditor = () => {
+                    if (addEditor) {
+                        addEditor.dispose();
+                        addEditor = null;
+                    }
+                    if (configForm.type === 'json' && addEditorRef.value) {
+                        const width = addEditorRef.value.clientWidth || addEditorRef.value.parentElement?.clientWidth || 0;
+                        addEditor = monaco.editor.create(addEditorRef.value, {
+                            value: configForm.value || '{}',
+                            language: 'json',
+                            theme: 'vs',
+                            automaticLayout: true,
+                            minimap: { enabled: false },
+                            scrollBeyondLastLine: false,
+                            fontSize: 14,
+                            lineNumbers: 'on',
+                            renderLineHighlight: 'all',
+                            quickSuggestions: true,
+                            suggestOnTriggerCharacters: true,
+                            formatOnPaste: true,
+                            formatOnType: true,
+                            wordWrap: 'on',
+                            wrappingStrategy: 'advanced',
+                            width: width || undefined
+                        });
+                        setTimeout(layoutAddEditor, 0);
+                        setTimeout(layoutAddEditor, 150);
+
+                        // 监听内容变化和验证
+                        addEditor.onDidChangeModelContent(() => {
+                            validateAddJSON();
+                        });
+
+                        // 初始验证
+                        validateAddJSON();
+                    }
+                };
+
+                // 创建编辑配置的编辑器
+                const createEditEditor = () => {
+                    if (editEditor) {
+                        editEditor.dispose();
+                        editEditor = null;
+                    }
+                    if (editForm.type === 'json' && editEditorRef.value) {
+                        const width = editEditorRef.value.clientWidth || editEditorRef.value.parentElement?.clientWidth || 0;
+                        editEditor = monaco.editor.create(editEditorRef.value, {
+                            value: editForm.value || '{}',
+                            language: 'json',
+                            theme: 'vs',
+                            automaticLayout: true,
+                            minimap: { enabled: false },
+                            scrollBeyondLastLine: false,
+                            fontSize: 14,
+                            lineNumbers: 'on',
+                            renderLineHighlight: 'all',
+                            quickSuggestions: true,
+                            suggestOnTriggerCharacters: true,
+                            formatOnPaste: true,
+                            formatOnType: true,
+                            wordWrap: 'on',
+                            wrappingStrategy: 'advanced',
+                            width: width || undefined
+                        });
+                        setTimeout(layoutEditEditor, 0);
+                        setTimeout(layoutEditEditor, 150);
+
+                        // 监听内容变化和验证
+                        editEditor.onDidChangeModelContent(() => {
+                            validateEditJSON();
+                        });
+
+                        // 初始验证
+                        validateEditJSON();
+                    }
+                };
+
+                // 验证添加配置的 JSON
+                const validateAddJSON = () => {
+                    if (!addEditor) return;
+                    const value = addEditor.getValue();
+                    try {
+                        JSON.parse(value);
+                        jsonValid.value = true;
+                        jsonError.value = '';
+                        configForm.value = value;
+                    } catch (e) {
+                        jsonValid.value = false;
+                        jsonError.value = 'JSON 格式错误: ' + e.message;
+                    }
+                };
+
+                // 验证编辑配置的 JSON
+                const validateEditJSON = () => {
+                    if (!editEditor) return;
+                    const value = editEditor.getValue();
+                    try {
+                        JSON.parse(value);
+                        editJsonValid.value = true;
+                        editJsonError.value = '';
+                        editForm.value = value;
+                    } catch (e) {
+                        editJsonValid.value = false;
+                        editJsonError.value = 'JSON 格式错误: ' + e.message;
+                    }
+                };
+
+                // 格式化 JSON（添加配置）
+                const formatJSON = () => {
+                    if (addEditor) {
+                        addEditor.getAction('editor.action.formatDocument').run();
+                    }
+                };
+
+                // 压缩 JSON（添加配置）
+                const compressJSON = () => {
+                    if (addEditor) {
+                        const value = addEditor.getValue();
+                        try {
+                            const obj = JSON.parse(value);
+                            addEditor.setValue(JSON.stringify(obj));
+                        } catch (e) {
+                            ElMessage.error('JSON 格式错误，无法压缩');
+                        }
+                    }
+                };
+
+                // 格式化 JSON（编辑配置）
+                const formatEditJSON = () => {
+                    if (editEditor) {
+                        editEditor.getAction('editor.action.formatDocument').run();
+                    }
+                };
+
+                // 压缩 JSON（编辑配置）
+                const compressEditJSON = () => {
+                    if (editEditor) {
+                        const value = editEditor.getValue();
+                        try {
+                            const obj = JSON.parse(value);
+                            editEditor.setValue(JSON.stringify(obj));
+                        } catch (e) {
+                            ElMessage.error('JSON 格式错误，无法压缩');
+                        }
+                    }
+                };
+
+                // 类型改变时的处理（添加配置）
+                const onTypeChange = () => {
+                    if (configForm.type === 'json') {
+                        if (showAddConfig.value) {
+                            setTimeout(createAddEditor, 0);
+                        }
+                    } else {
+                        if (addEditor) {
+                            configForm.value = addEditor.getValue();
+                            addEditor.dispose();
+                            addEditor = null;
+                        }
+                        jsonValid.value = true;
+                        jsonError.value = '';
+                    }
+                };
+
+                // 类型改变时的处理（编辑配置）
+                const onEditTypeChange = () => {
+                    if (editForm.type === 'json') {
+                        if (showEditConfig.value) {
+                            setTimeout(createEditEditor, 0);
+                        }
+                    } else {
+                        if (editEditor) {
+                            editForm.value = editEditor.getValue();
+                            editEditor.dispose();
+                            editEditor = null;
+                        }
+                        editJsonValid.value = true;
+                        editJsonError.value = '';
+                    }
+                };
+
+                const handleAddConfigOpened = () => {
+                    if (configForm.type === 'json') {
+                        createAddEditor();
+                        setTimeout(layoutAddEditor, 150);
+                    }
+                };
+
+                const handleEditConfigOpened = () => {
+                    if (editForm.type === 'json') {
+                        createEditEditor();
+                        setTimeout(layoutEditEditor, 150);
+                    }
+                };
+
+                // 监听对话框显示
+                watch(showAddConfig, (val) => {
+                    if (!val) {
+                        // 对话框关闭时清理编辑器
+                        if (addEditor) {
+                            addEditor.dispose();
+                            addEditor = null;
+                        }
+                        jsonValid.value = true;
+                        jsonError.value = '';
+                    }
+                });
+
+                watch(showEditConfig, (val) => {
+                    if (!val) {
+                        // 对话框关闭时清理编辑器
+                        if (editEditor) {
+                            editEditor.dispose();
+                            editEditor = null;
+                        }
+                        editJsonValid.value = true;
+                        editJsonError.value = '';
+                    }
+                });
+
+                // 修改密码
+                const showChangePassword = ref(false);
+                const passwordLoading = ref(false);
+                const passwordRef = ref(null);
+                const passwordForm = reactive({ old_password: '', new_password: '' });
+                const passwordRules = {
+                    old_password: [{ required: true, message: '请输入旧密码', trigger: 'blur' }],
+                    new_password: [{ required: true, min: 6, message: '新密码至少6位', trigger: 'blur' }]
+                };
+
+                // Token管理
+                const showTokenManager = ref(false);
+                const currentService = ref(null);
+                const tokenEnv = ref('');
+                const currentToken = ref(null);
+                const tokenLoading = ref(false);
+
+                // HTTP 请求封装
+                const request = async (url, options = {}) => {
+                    const token = localStorage.getItem('token');
+                    const headers = {
+                        'Content-Type': 'application/json',
+                        ...options.headers
+                    };
+                    if (token) {
+                        headers['Authorization'] = `Bearer ${token}`;
+                    }
+
+                    const response = await fetch(url, {
+                        ...options,
+                        headers
+                    });
+
+                    const data = await response.json();
+                    if (!response.ok) {
+                        throw new Error(data.error || '请求失败');
+                    }
+                    return data;
+                };
+
+                // 登录
+                const handleLogin = async () => {
+                    const valid = await loginRef.value.validate().catch(() => false);
+                    if (!valid) return;
+
+                    loading.value = true;
+                    try {
+                        const data = await request(`${API_BASE}/auth/login`, {
+                            method: 'POST',
+                            body: JSON.stringify(loginForm)
+                        });
+                        localStorage.setItem('token', data.token);
+                        localStorage.setItem('username', data.username);
+                        username.value = data.username;
+                        isLoggedIn.value = true;
+                        ElMessage.success('登录成功');
+                        loadServices();
+                    } catch (error) {
+                        ElMessage.error(error.message);
+                    } finally {
+                        loading.value = false;
+                    }
+                };
+
+                // 退出
+                const logout = () => {
+                    localStorage.removeItem('token');
+                    localStorage.removeItem('username');
+                    isLoggedIn.value = false;
+                };
+
+                // 修改密码
+                const changePassword = async () => {
+                    const valid = await passwordRef.value.validate().catch(() => false);
+                    if (!valid) return;
+
+                    passwordLoading.value = true;
+                    try {
+                        await request(`${API_BASE}/auth/change-password`, {
+                            method: 'POST',
+                            body: JSON.stringify(passwordForm)
+                        });
+                        ElMessage.success('密码修改成功，请重新登录');
+                        showChangePassword.value = false;
+                        passwordForm.old_password = '';
+                        passwordForm.new_password = '';
+                        setTimeout(() => {
+                            logout();
+                        }, 1500);
+                    } catch (error) {
+                        ElMessage.error(error.message);
+                    } finally {
+                        passwordLoading.value = false;
+                    }
+                };
+
+                // 加载服务列表
+                const loadServices = async () => {
+                    try {
+                        services.value = await request(`${API_BASE}/services`);
+                    } catch (error) {
+                        ElMessage.error(error.message);
+                    }
+                };
+
+                // 添加服务
+                const addService = async () => {
+                    const valid = await serviceRef.value.validate().catch(() => false);
+                    if (!valid) return;
+
+                    serviceLoading.value = true;
+                    try {
+                        await request(`${API_BASE}/services`, {
+                            method: 'POST',
+                            body: JSON.stringify(serviceForm)
+                        });
+                        ElMessage.success('添加成功');
+                        showAddService.value = false;
+                        serviceForm.name = '';
+                        serviceForm.description = '';
+                        loadServices();
+                    } catch (error) {
+                        ElMessage.error(error.message);
+                    } finally {
+                        serviceLoading.value = false;
+                    }
+                };
+
+                // 删除服务
+                const deleteService = async (row) => {
+                    try {
+                        await ElMessageBox.confirm('确定要删除该服务吗？相关配置也会被删除', '提示', { type: 'warning' });
+                        await request(`${API_BASE}/services/${row.id}`, { method: 'DELETE' });
+                        ElMessage.success('删除成功');
+                        loadServices();
+                    } catch (error) {
+                        if (error !== 'cancel') {
+                            ElMessage.error(error.message);
+                        }
+                    }
+                };
+
+                // Token管理
+                const manageToken = (service) => {
+                    currentService.value = service;
+                    tokenEnv.value = '';
+                    currentToken.value = null;
+                    showTokenManager.value = true;
+                };
+
+                const loadToken = async () => {
+                    if (!tokenEnv.value || !currentService.value) return;
+                    try {
+                        const data = await request(`${API_BASE}/tokens/${currentService.value.id}/${tokenEnv.value}`);
+                        currentToken.value = data;
+                    } catch (error) {
+                        currentToken.value = null;
+                    }
+                };
+
+                const getOrCreateToken = async () => {
+                    if (!tokenEnv.value || !currentService.value) return;
+                    tokenLoading.value = true;
+                    try {
+                        const data = await request(`${API_BASE}/tokens/${currentService.value.id}/${tokenEnv.value}`);
+                        currentToken.value = data;
+                        ElMessage.success('Token获取成功');
+                    } catch (error) {
+                        ElMessage.error(error.message);
+                    } finally {
+                        tokenLoading.value = false;
+                    }
+                };
+
+                const regenerateToken = async () => {
+                    try {
+                        await ElMessageBox.confirm('重新生成Token后，旧Token将失效，确定继续吗？', '提示', { type: 'warning' });
+                        const data = await request(`${API_BASE}/tokens/${currentService.value.id}/${tokenEnv.value}/regenerate`, {
+                            method: 'POST'
+                        });
+                        currentToken.value = data;
+                        ElMessage.success('Token重新生成成功');
+                    } catch (error) {
+                        if (error !== 'cancel') {
+                            ElMessage.error(error.message);
+                        }
+                    }
+                };
+
+                const copyToken = () => {
+                    if (currentToken.value?.token) {
+                        navigator.clipboard.writeText(currentToken.value.token);
+                        ElMessage.success('Token已复制到剪贴板');
+                    }
+                };
+
+                // 服务切换
+                const onServiceChange = () => {
+                    selectedEnv.value = '';
+                    configs.value = [];
+                };
+
+                // 加载配置列表
+                const loadConfigs = async () => {
+                    if (!selectedService.value || !selectedEnv.value) return;
+                    configLoading.value = true;
+                    try {
+                        configs.value = await request(`${API_BASE}/configs/${selectedService.value}/${selectedEnv.value}`);
+                    } catch (error) {
+                        ElMessage.error(error.message);
+                    } finally {
+                        configLoading.value = false;
+                    }
+                };
+
+                // 添加配置
+                const addConfig = async () => {
+                    const valid = await configRef.value.validate().catch(() => false);
+                    if (!valid) return;
+
+                    const service = services.value.find(s => s.name === selectedService.value);
+                    if (!service) return;
+
+                    configAddLoading.value = true;
+                    try {
+                        await request(`${API_BASE}/configs`, {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                service_id: service.id,
+                                env: selectedEnv.value,
+                                key: configForm.key,
+                                value: configForm.value,
+                                type: configForm.type
+                            })
+                        });
+                        ElMessage.success('添加成功');
+                        showAddConfig.value = false;
+                        configForm.key = '';
+                        configForm.value = '';
+                        configForm.type = 'string';
+                        loadConfigs();
+                    } catch (error) {
+                        ElMessage.error(error.message);
+                    } finally {
+                        configAddLoading.value = false;
+                    }
+                };
+
+                // 编辑配置
+                const editConfig = (row) => {
+                    editForm.id = row.id;
+                    editForm.key = row.key;
+                    editForm.value = row.value;
+                    editForm.type = row.type || 'string';
+                    showEditConfig.value = true;
+                };
+
+                // 更新配置
+                const updateConfig = async () => {
+                    const valid = await editRef.value.validate().catch(() => false);
+                    if (!valid) return;
+
+                    configEditLoading.value = true;
+                    try {
+                        await request(`${API_BASE}/configs/${editForm.id}`, {
+                            method: 'PUT',
+                            body: JSON.stringify({ 
+                                value: editForm.value,
+                                type: editForm.type
+                            })
+                        });
+                        ElMessage.success('更新成功');
+                        showEditConfig.value = false;
+                        loadConfigs();
+                    } catch (error) {
+                        ElMessage.error(error.message);
+                    } finally {
+                        configEditLoading.value = false;
+                    }
+                };
+
+                // 删除配置
+                const deleteConfig = async (row) => {
+                    try {
+                        await ElMessageBox.confirm('确定要删除该配置吗？', '提示', { type: 'warning' });
+                        await request(`${API_BASE}/configs/${row.id}`, { method: 'DELETE' });
+                        ElMessage.success('删除成功');
+                        loadConfigs();
+                    } catch (error) {
+                        if (error !== 'cancel') {
+                            ElMessage.error(error.message);
+                        }
+                    }
+                };
+
+                // 格式化日期
+                const formatDate = (dateStr) => {
+                    if (!dateStr) return '';
+                    const date = new Date(dateStr);
+                    return date.toLocaleString('zh-CN');
+                };
+
+                onMounted(() => {
+                    initMonaco();
+                    if (isLoggedIn.value) {
+                        loadServices();
+                    }
+                });
+
+                return {
+                    isLoggedIn,
+                    username,
+                    loading,
+                    loginRef,
+                    loginForm,
+                    loginRules,
+                    handleLogin,
+                    logout,
+                    showChangePassword,
+                    passwordForm,
+                    passwordRules,
+                    passwordRef,
+                    passwordLoading,
+                    changePassword,
+                    services,
+                    showAddService,
+                    serviceLoading,
+                    serviceRef,
+                    serviceForm,
+                    serviceRules,
+                    addService,
+                    deleteService,
+                    manageToken,
+                    showTokenManager,
+                    currentService,
+                    tokenEnv,
+                    currentToken,
+                    tokenLoading,
+                    loadToken,
+                    getOrCreateToken,
+                    regenerateToken,
+                    copyToken,
+                    selectedService,
+                    selectedEnv,
+                    envs,
+                    configs,
+                    configLoading,
+                    showAddConfig,
+                    configAddLoading,
+                    configRef,
+                    configForm,
+                    configRules,
+                    addConfig,
+                    editConfig,
+                    showEditConfig,
+                    configEditLoading,
+                    editRef,
+                    editForm,
+                    editRules,
+                    updateConfig,
+                    deleteConfig,
+                    onServiceChange,
+                    loadConfigs,
+                    formatDate,
+                    Plus,
+                    RefreshRight,
+                    User,
+                    Lock,
+                    Key,
+                    // Monaco Editor 相关
+                    addEditorRef,
+                    editEditorRef,
+                    jsonValid,
+                    jsonError,
+                    editJsonValid,
+                    editJsonError,
+                    formatJSON,
+                    compressJSON,
+                    formatEditJSON,
+                    compressEditJSON,
+                    onTypeChange,
+                    onEditTypeChange,
+                    handleAddConfigOpened,
+                    handleEditConfigOpened
+                };
+            }
+        }).use(ElementPlus).mount('#app');
+    </script>
+</body>
+</html>
