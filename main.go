@@ -53,8 +53,8 @@ func main() {
 	api := r.Group("/api")
 	{
 		// 认证（无需鉴权）
+		api.GET("/auth/captcha", authHandler.GetCaptcha)
 		api.POST("/auth/login", authHandler.Login)
-		api.POST("/auth/register", authHandler.Register)
 
 		// 需要鉴权的路由
 		authorized := api.Group("", middleware.AuthMiddleware())
@@ -73,6 +73,7 @@ func main() {
 
 			// Token 管理
 			authorized.GET("/tokens/:service_id/:env", tokenHandler.GetOrCreateToken)
+			authorized.GET("/tokens/:service_id/:env/connections", tokenHandler.ListConnections)
 			authorized.POST("/tokens/:service_id/:env/regenerate", tokenHandler.RegenerateToken)
 			authorized.DELETE("/tokens/:service_id/:env", tokenHandler.DeleteToken)
 
@@ -80,7 +81,7 @@ func main() {
 			authorized.POST("/auth/change-password", authHandler.ChangePassword)
 		}
 
-		// 客户端接口（无需鉴权）
+		// 客户端接口（使用服务 Token 鉴权）
 		api.GET("/client/configs/:service/:env", configHandler.GetServiceConfig)
 	}
 

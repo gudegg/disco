@@ -109,6 +109,7 @@ func (c *Client) Load(ctx context.Context) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Authorization", "Bearer "+c.opts.Token)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -156,16 +157,16 @@ func (c *Client) Start(ctx context.Context) error {
 
 func (c *Client) subscribeOnce(ctx context.Context) error {
 	requestURL := fmt.Sprintf(
-		"%s/sse/configs?service=%s&env=%s&token=%s",
+		"%s/sse/configs?service=%s&env=%s",
 		c.opts.ServerURL,
 		url.QueryEscape(c.opts.Service),
 		url.QueryEscape(c.opts.Env),
-		url.QueryEscape(c.opts.Token),
 	)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return err
 	}
+	req.Header.Set("Authorization", "Bearer "+c.opts.Token)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err

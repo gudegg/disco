@@ -13,14 +13,10 @@ import (
 
 // LoginRequest 登录请求
 type LoginRequest struct {
-	Username string `json:"username" binding:"required"`
-	Password string `json:"password" binding:"required"`
-}
-
-// RegisterRequest 注册请求
-type RegisterRequest struct {
-	Username string `json:"username" binding:"required,min=3,max=50"`
-	Password string `json:"password" binding:"required,min=6"`
+	Username    string `json:"username" binding:"required"`
+	Password    string `json:"password" binding:"required"`
+	CaptchaID   string `json:"captcha_id" binding:"required"`
+	CaptchaCode string `json:"captcha_code" binding:"required"`
 }
 
 // ChangePasswordRequest 修改密码请求
@@ -34,6 +30,7 @@ type AuthHandler struct {
 	db        *gorm.DB
 	jwtSecret string
 	jwtExpire int
+	captchas  *captchaStore
 }
 
 // NewAuthHandler 创建认证处理器
@@ -42,7 +39,19 @@ func NewAuthHandler(db *gorm.DB, jwtSecret string, jwtExpire int) *AuthHandler {
 		db:        db,
 		jwtSecret: jwtSecret,
 		jwtExpire: jwtExpire,
+		captchas:  NewCaptchaStore(1 * time.Minute),
 	}
+}
+
+// GetCaptcha 获取登录验证码
+func (h *AuthHandler) GetCaptcha(c *gin.Context) {
+	captcha, err := h.captchas.Generate()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate captcha"})
+		return
+	}
+
+	c.JSON(http.StatusOK, captcha)
 }
 
 // generateToken 生成 JWT Token
@@ -65,6 +74,11 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if !h.captchas.Verify(req.CaptchaID, req.CaptchaCode) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "验证码错误或已过期"})
 		return
 	}
 
@@ -130,41 +144,4 @@ func (h *AuthHandler) ChangePassword(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "password changed successfully"})
-}
-
-// Register 注册
-func (h *AuthHandler) Register(c *gin.Context) {
-	var req RegisterRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash password"})
-		return
-	}
-
-	user := models.User{
-		Username: req.Username,
-		Password: string(hashedPassword),
-	}
-
-	if err := h.db.Create(&user).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "username already exists"})
-		return
-	}
-
-	token, err := h.generateToken(user.ID, user.Username)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"token":    token,
-		"expires":  h.jwtExpire,
-		"username": user.Username,
-	})
 }

@@ -24,14 +24,18 @@ func TestClientStart(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/api/client/configs/order-service/prod":
+			if r.Header.Get("Authorization") != "Bearer "+token {
+				http.Error(w, "missing token", http.StatusUnauthorized)
+				return
+			}
 			mu.Lock()
 			currentVersion := version
 			mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(w, `{"service":"order-service","env":"prod","version":%d,"configs":{"app.name":"demo","app.json":"{\"enabled\":true}"}}`, currentVersion)
 		case r.URL.Path == "/sse/configs":
-			if r.URL.Query().Get("token") != token {
-				http.Error(w, "invalid token", http.StatusUnauthorized)
+			if r.Header.Get("Authorization") != "Bearer "+token {
+				http.Error(w, "missing token", http.StatusUnauthorized)
 				return
 			}
 			w.Header().Set("Content-Type", "text/event-stream")

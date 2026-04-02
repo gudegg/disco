@@ -70,10 +70,7 @@ go build -o config-center
 
 ```bash
 POST /api/auth/login
-{"username":"admin","password":"admin123"}
-
-POST /api/auth/register
-{"username":"user","password":"password"}
+{"username":"admin","password":"admin123","captcha_id":"xxx","captcha_code":"1234"}
 ```
 
 ### 服务管理
@@ -96,8 +93,8 @@ DELETE /api/configs/:id           # 删除配置
 ### 客户端接口
 
 ```bash
-GET /api/client/configs/:service/:env  # 获取配置（客户端用）
-GET /sse/configs?service=xxx&env=xxx&token=xxx   # SSE 订阅配置变更
+GET /api/client/configs/:service/:env  # 获取配置（客户端用，需 Authorization: Bearer <token>）
+GET /sse/configs?service=xxx&env=xxx   # SSE 订阅配置变更，需 Authorization: Bearer <token>
 ```
 
 ## 客户端模块
@@ -122,6 +119,7 @@ GET /sse/configs?service=xxx&env=xxx&token=xxx   # SSE 订阅配置变更
 
 当前实现中，Token 同时用于：
 
+- 初始拉取配置鉴权
 - SSE 订阅鉴权
 - SSE 推送消息解密
 

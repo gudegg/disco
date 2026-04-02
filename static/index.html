@@ -16,6 +16,10 @@
         .login-container { height: 100vh; display: flex; align-items: center; justify-content: center; }
         .login-box { width: 400px; padding: 40px; background: #fff; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
         .login-title { text-align: center; font-size: 24px; font-weight: bold; margin-bottom: 30px; color: #303133; }
+        .captcha-row { display: flex; gap: 12px; align-items: stretch; }
+        .captcha-input { flex: 1; }
+        .captcha-image { width: 132px; height: 44px; border: 1px solid #dcdfe6; border-radius: 4px; cursor: pointer; background: #f7f9fc; object-fit: cover; }
+        .captcha-tip { margin-top: 6px; font-size: 12px; color: #909399; line-height: 1; }
         .main-container { min-height: 100vh; }
         .header { background: #fff; padding: 0 20px; height: 60px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
         .header-title { font-size: 20px; font-weight: bold; color: #409eff; }
@@ -42,6 +46,13 @@
                     </el-form-item>
                     <el-form-item prop="password">
                         <el-input v-model="loginForm.password" type="password" placeholder="密码" prefix-icon="Lock" size="large" @keyup.enter="handleLogin"></el-input>
+                    </el-form-item>
+                    <el-form-item prop="captcha_code">
+                        <div class="captcha-row">
+                            <el-input v-model="loginForm.captcha_code" class="captcha-input" placeholder="请输入验证码" size="large" maxlength="4" @keyup.enter="handleLogin"></el-input>
+                            <img class="captcha-image" :src="captchaImage" alt="验证码" @click="fetchCaptcha">
+                        </div>
+                        <div class="captcha-tip">点击验证码可刷新</div>
                     </el-form-item>
                     <el-form-item>
                         <el-button type="primary" size="large" style="width: 100%" :loading="loading" @click="handleLogin">登录</el-button>
@@ -228,7 +239,7 @@
         </el-dialog>
 
         <!-- Token管理对话框 -->
-        <el-dialog v-model="showTokenManager" title="Token管理" width="600px">
+        <el-dialog v-model="showTokenManager" title="Token管理" width="760px">
             <el-form label-width="80px">
                 <el-form-item label="服务">
                     <span>{{ currentService?.name }}</span>
@@ -244,6 +255,28 @@
                             <el-button @click="copyToken">复制</el-button>
                         </template>
                     </el-input>
+                </el-form-item>
+                <el-form-item label="连接监控" v-if="tokenEnv">
+                    <div style="width: 100%;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                            <span style="color: #606266;">当前在线客户端</span>
+                            <el-button size="small" @click="loadConnections" :loading="connectionsLoading">刷新</el-button>
+                        </div>
+                        <el-table :data="connections" border size="small" style="width: 100%" v-loading="connectionsLoading">
+                            <el-table-column prop="ip" label="客户端IP" min-width="160"></el-table-column>
+                            <el-table-column prop="active_connections" label="连接数" width="90"></el-table-column>
+                            <el-table-column label="首次连接" min-width="180">
+                                <template #default="scope">
+                                    {{ formatDate(scope.row.first_connected_at) }}
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="最近活跃" min-width="180">
+                                <template #default="scope">
+                                    {{ formatDate(scope.row.last_seen_at) }}
+                                </template>
+                            </el-table-column>
+                        </el-table>
+                    </div>
                 </el-form-item>
             </el-form>
             <template #footer>
@@ -268,10 +301,15 @@
                 const username = ref(localStorage.getItem('username') || '');
                 const loading = ref(false);
                 const loginRef = ref(null);
-                const loginForm = reactive({ username: '', password: '' });
+                const captchaImage = ref('');
+                const loginForm = reactive({ username: '', password: '', captcha_id: '', captcha_code: '' });
                 const loginRules = {
                     username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
-                    password: [{ required: true, message: '请输入密码', trigger: 'blur' }]
+                    password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
+                    captcha_code: [
+                        { required: true, message: '请输入验证码', trigger: 'blur' },
+                        { min: 4, max: 4, message: '验证码为4位数字', trigger: 'blur' }
+                    ]
                 };
 
                 // 服务管理
@@ -583,6 +621,9 @@
                 const tokenEnv = ref('');
                 const currentToken = ref(null);
                 const tokenLoading = ref(false);
+                const connections = ref([]);
+                const connectionsLoading = ref(false);
+                let tokenMonitorTimer = null;
 
                 // HTTP 请求封装
                 const request = async (url, options = {}) => {
@@ -607,6 +648,18 @@
                     return data;
                 };
 
+                const fetchCaptcha = async () => {
+                    try {
+                        const data = await request(`${API_BASE}/auth/captcha`);
+                        loginForm.captcha_id = data.id;
+                        loginForm.captcha_code = '';
+                        captchaImage.value = data.image;
+                    } catch (error) {
+                        captchaImage.value = '';
+                        ElMessage.error(error.message);
+                    }
+                };
+
                 // 登录
                 const handleLogin = async () => {
                     const valid = await loginRef.value.validate().catch(() => false);
@@ -626,6 +679,7 @@
                         loadServices();
                     } catch (error) {
                         ElMessage.error(error.message);
+                        fetchCaptcha();
                     } finally {
                         loading.value = false;
                     }
@@ -636,6 +690,7 @@
                     localStorage.removeItem('token');
                     localStorage.removeItem('username');
                     isLoggedIn.value = false;
+                    fetchCaptcha();
                 };
 
                 // 修改密码
@@ -714,11 +769,15 @@
                     currentService.value = service;
                     tokenEnv.value = '';
                     currentToken.value = null;
+                    connections.value = [];
                     showTokenManager.value = true;
                 };
 
                 const loadToken = async () => {
-                    if (!tokenEnv.value || !currentService.value) return;
+                    if (!tokenEnv.value || !currentService.value) {
+                        currentToken.value = null;
+                        return;
+                    }
                     try {
                         const data = await request(`${API_BASE}/tokens/${currentService.value.id}/${tokenEnv.value}`);
                         currentToken.value = data;
@@ -727,12 +786,45 @@
                     }
                 };
 
+                const loadConnections = async () => {
+                    if (!tokenEnv.value || !currentService.value) {
+                        connections.value = [];
+                        return;
+                    }
+                    connectionsLoading.value = true;
+                    try {
+                        const data = await request(`${API_BASE}/tokens/${currentService.value.id}/${tokenEnv.value}/connections`);
+                        connections.value = data.connections || [];
+                    } catch (error) {
+                        connections.value = [];
+                        ElMessage.error(error.message);
+                    } finally {
+                        connectionsLoading.value = false;
+                    }
+                };
+
+                const stopTokenMonitor = () => {
+                    if (tokenMonitorTimer) {
+                        clearInterval(tokenMonitorTimer);
+                        tokenMonitorTimer = null;
+                    }
+                };
+
+                const startTokenMonitor = () => {
+                    stopTokenMonitor();
+                    if (!showTokenManager.value || !tokenEnv.value || !currentService.value) return;
+                    tokenMonitorTimer = setInterval(() => {
+                        loadConnections();
+                    }, 10000);
+                };
+
                 const getOrCreateToken = async () => {
                     if (!tokenEnv.value || !currentService.value) return;
                     tokenLoading.value = true;
                     try {
                         const data = await request(`${API_BASE}/tokens/${currentService.value.id}/${tokenEnv.value}`);
                         currentToken.value = data;
+                        loadConnections();
                         ElMessage.success('Token获取成功');
                     } catch (error) {
                         ElMessage.error(error.message);
@@ -748,6 +840,7 @@
                             method: 'POST'
                         });
                         currentToken.value = data;
+                        loadConnections();
                         ElMessage.success('Token重新生成成功');
                     } catch (error) {
                         if (error !== 'cancel') {
@@ -762,6 +855,19 @@
                         ElMessage.success('Token已复制到剪贴板');
                     }
                 };
+
+                watch([showTokenManager, tokenEnv, currentService], ([visible, env, service]) => {
+                    if (visible && env && service) {
+                        loadConnections();
+                        startTokenMonitor();
+                        return;
+                    }
+
+                    stopTokenMonitor();
+                    if (!visible) {
+                        connections.value = [];
+                    }
+                });
 
                 // 服务切换
                 const onServiceChange = () => {
@@ -873,6 +979,8 @@
                     initMonaco();
                     if (isLoggedIn.value) {
                         loadServices();
+                    } else {
+                        fetchCaptcha();
                     }
                 });
 
@@ -881,8 +989,10 @@
                     username,
                     loading,
                     loginRef,
+                    captchaImage,
                     loginForm,
                     loginRules,
+                    fetchCaptcha,
                     handleLogin,
                     logout,
                     showChangePassword,
@@ -904,8 +1014,11 @@
                     currentService,
                     tokenEnv,
                     currentToken,
+                    connections,
+                    connectionsLoading,
                     tokenLoading,
                     loadToken,
+                    loadConnections,
                     getOrCreateToken,
                     regenerateToken,
                     copyToken,

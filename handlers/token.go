@@ -4,7 +4,10 @@ import (
 	"config-center/models"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -21,36 +24,59 @@ func NewTokenHandler(db *gorm.DB) *TokenHandler {
 }
 
 // generateRandomString 生成随机字符串
-func generateRandomString(length int) string {
+func generateRandomString(length int) (string, error) {
 	bytes := make([]byte, length)
-	rand.Read(bytes)
-	return hex.EncodeToString(bytes)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
 }
 
 // GetOrCreateToken 获取或创建 Token
 func (h *TokenHandler) GetOrCreateToken(c *gin.Context) {
-	serviceID := c.Param("service_id")
+	serviceIDParam := c.Param("service_id")
 	env := c.Param("env")
+	serviceID, err := parseServiceID(serviceIDParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if _, err := h.loadService(serviceID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	// 查找是否已存在
 	var token models.ServiceToken
 	if err := h.db.Where("service_id = ? AND env = ?", serviceID, env).First(&token).Error; err == nil {
 		// 已存在，返回现有 token
 		c.JSON(http.StatusOK, gin.H{
-			"service_id": serviceID,
+			"service_id": serviceIDParam,
 			"env":        env,
 			"token":      token.Token,
 			"created_at": token.CreatedAt,
 		})
 		return
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query token"})
+		return
 	}
 
 	// 生成新的 token 和 secret key
-	tokenStr := generateRandomString(32)
-	secretKey := generateRandomString(32)
+	tokenStr, err := generateRandomString(32)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
+		return
+	}
+	secretKey, err := generateRandomString(32)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token secret"})
+		return
+	}
 
 	token = models.ServiceToken{
-		ServiceID: uint(parseUint(serviceID)),
+		ServiceID: serviceID,
 		Env:       env,
 		Token:     tokenStr,
 		SecretKey: secretKey,
@@ -62,7 +88,7 @@ func (h *TokenHandler) GetOrCreateToken(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"service_id": serviceID,
+		"service_id": serviceIDParam,
 		"env":        env,
 		"token":      token.Token,
 		"created_at": token.CreatedAt,
@@ -71,8 +97,18 @@ func (h *TokenHandler) GetOrCreateToken(c *gin.Context) {
 
 // GetToken 获取 Token 信息
 func (h *TokenHandler) GetToken(c *gin.Context) {
-	serviceID := c.Param("service_id")
+	serviceIDParam := c.Param("service_id")
 	env := c.Param("env")
+	serviceID, err := parseServiceID(serviceIDParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if _, err := h.loadService(serviceID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	var token models.ServiceToken
 	if err := h.db.Where("service_id = ? AND env = ?", serviceID, env).First(&token).Error; err != nil {
@@ -81,7 +117,7 @@ func (h *TokenHandler) GetToken(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"service_id": serviceID,
+		"service_id": serviceIDParam,
 		"env":        env,
 		"token":      token.Token,
 		"created_at": token.CreatedAt,
@@ -90,31 +126,53 @@ func (h *TokenHandler) GetToken(c *gin.Context) {
 
 // RegenerateToken 重新生成 Token
 func (h *TokenHandler) RegenerateToken(c *gin.Context) {
-	serviceID := c.Param("service_id")
+	serviceIDParam := c.Param("service_id")
 	env := c.Param("env")
+	serviceID, err := parseServiceID(serviceIDParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if _, err := h.loadService(serviceID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	// 生成新的 token 和 secret key
-	tokenStr := generateRandomString(32)
-	secretKey := generateRandomString(32)
+	tokenStr, err := generateRandomString(32)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
+		return
+	}
+	secretKey, err := generateRandomString(32)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token secret"})
+		return
+	}
 
-	// 删除旧 token
-	h.db.Where("service_id = ? AND env = ?", serviceID, env).Delete(&models.ServiceToken{})
-
-	// 创建新 token
 	token := models.ServiceToken{
-		ServiceID: uint(parseUint(serviceID)),
+		ServiceID: serviceID,
 		Env:       env,
 		Token:     tokenStr,
 		SecretKey: secretKey,
 	}
 
-	if err := h.db.Create(&token).Error; err != nil {
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("service_id = ? AND env = ?", serviceID, env).Delete(&models.ServiceToken{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&token).Error; err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create token"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"service_id": serviceID,
+		"service_id": serviceIDParam,
 		"env":        env,
 		"token":      token.Token,
 		"created_at": token.CreatedAt,
@@ -123,8 +181,18 @@ func (h *TokenHandler) RegenerateToken(c *gin.Context) {
 
 // DeleteToken 删除 Token
 func (h *TokenHandler) DeleteToken(c *gin.Context) {
-	serviceID := c.Param("service_id")
+	serviceIDParam := c.Param("service_id")
 	env := c.Param("env")
+	serviceID, err := parseServiceID(serviceIDParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if _, err := h.loadService(serviceID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	if err := h.db.Where("service_id = ? AND env = ?", serviceID, env).Delete(&models.ServiceToken{}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete token"})
@@ -132,6 +200,36 @@ func (h *TokenHandler) DeleteToken(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "token deleted"})
+}
+
+// ListConnections 获取当前在线连接
+func (h *TokenHandler) ListConnections(c *gin.Context) {
+	serviceIDParam := c.Param("service_id")
+	env := c.Param("env")
+	serviceID, err := parseServiceID(serviceIDParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	service, err := h.loadService(serviceID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	sseManager := GetGlobalSSEManager()
+	if sseManager == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "sse manager not initialized"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"service_id":  serviceIDParam,
+		"service":     service.Name,
+		"env":         env,
+		"connections": sseManager.ListConnections(service.Name, env),
+	})
 }
 
 // VerifyToken 验证 Token
@@ -152,11 +250,21 @@ func (h *TokenHandler) GetSecretKeyByToken(tokenStr string) (string, error) {
 	return token.SecretKey, nil
 }
 
-// parseUint 辅助函数
-func parseUint(s string) uint64 {
-	var result uint64
-	for _, c := range s {
-		result = result*10 + uint64(c-'0')
+func parseServiceID(raw string) (uint, error) {
+	parsed, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid service id")
 	}
-	return result
+	return uint(parsed), nil
+}
+
+func (h *TokenHandler) loadService(serviceID uint) (*models.Service, error) {
+	var service models.Service
+	if err := h.db.First(&service, serviceID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("service not found")
+		}
+		return nil, fmt.Errorf("failed to query service")
+	}
+	return &service, nil
 }

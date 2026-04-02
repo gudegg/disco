@@ -11,6 +11,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -293,10 +297,15 @@ func (h *ConfigHandler) GetEnvs(c *gin.Context) {
 func (h *ConfigHandler) GetServiceConfig(c *gin.Context) {
 	serviceName := c.Param("service")
 	env := c.Param("env")
+	serviceToken, authErr := validateServiceTokenRequest(c, serviceName, env)
+	if authErr != nil {
+		c.JSON(authErr.StatusCode, gin.H{"error": authErr.Message})
+		return
+	}
 
 	// 查找服务
 	var service models.Service
-	if err := h.db.Where("name = ?", serviceName).First(&service).Error; err != nil {
+	if err := h.db.Where("id = ? AND name = ?", serviceToken.ServiceID, serviceName).First(&service).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "service not found"})
 		return
 	}
@@ -342,30 +351,15 @@ func NewSSEHandler(sse SSEManager) *SSEHandler {
 func (h *SSEHandler) HandleSSE(c *gin.Context) {
 	service := c.Query("service")
 	env := c.Query("env")
-	token := c.Query("token")
 
-	if service == "" || env == "" || token == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "service, env and token are required"})
+	if service == "" || env == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "service and env are required"})
 		return
 	}
 
-	// 验证 Token
-	tokenHandler := GetGlobalTokenHandler()
-	serviceToken, err := tokenHandler.VerifyToken(token)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
-		return
-	}
-
-	// 验证服务名和环境是否匹配
-	var svc models.Service
-	if err := tokenHandler.db.Where("id = ? AND name = ?", serviceToken.ServiceID, service).First(&svc).Error; err != nil {
-		c.JSON(http.StatusForbidden, gin.H{"error": "token does not match service"})
-		return
-	}
-
-	if serviceToken.Env != env {
-		c.JSON(http.StatusForbidden, gin.H{"error": "token does not match env"})
+	serviceToken, authErr := validateServiceTokenRequest(c, service, env)
+	if authErr != nil {
+		c.JSON(authErr.StatusCode, gin.H{"error": authErr.Message})
 		return
 	}
 
@@ -373,7 +367,7 @@ func (h *SSEHandler) HandleSSE(c *gin.Context) {
 	sseMgr := GetGlobalSSEManager()
 
 	// 订阅配置变更
-	ch := sseMgr.Subscribe(service, env)
+	ch := sseMgr.Subscribe(service, env, c.ClientIP())
 	defer sseMgr.Unsubscribe(service, env, ch)
 
 	// 设置 SSE 响应头
@@ -410,6 +404,71 @@ func (h *SSEHandler) HandleSSE(c *gin.Context) {
 	}
 }
 
+type serviceTokenAuthError struct {
+	StatusCode int
+	Message    string
+}
+
+func validateServiceTokenRequest(c *gin.Context, service, env string) (*models.ServiceToken, *serviceTokenAuthError) {
+	token := extractBearerToken(c.GetHeader("Authorization"))
+	if token == "" {
+		token = strings.TrimSpace(c.GetHeader("X-Config-Token"))
+	}
+	if token == "" {
+		return nil, &serviceTokenAuthError{
+			StatusCode: http.StatusUnauthorized,
+			Message:    "missing service token",
+		}
+	}
+
+	tokenHandler := GetGlobalTokenHandler()
+	if tokenHandler == nil {
+		return nil, &serviceTokenAuthError{
+			StatusCode: http.StatusInternalServerError,
+			Message:    "token handler not initialized",
+		}
+	}
+
+	serviceToken, err := tokenHandler.VerifyToken(token)
+	if err != nil {
+		return nil, &serviceTokenAuthError{
+			StatusCode: http.StatusUnauthorized,
+			Message:    "invalid token",
+		}
+	}
+
+	var svc models.Service
+	if err := tokenHandler.db.Where("id = ? AND name = ?", serviceToken.ServiceID, service).First(&svc).Error; err != nil {
+		return nil, &serviceTokenAuthError{
+			StatusCode: http.StatusForbidden,
+			Message:    "token does not match service",
+		}
+	}
+
+	if serviceToken.Env != env {
+		return nil, &serviceTokenAuthError{
+			StatusCode: http.StatusForbidden,
+			Message:    "token does not match env",
+		}
+	}
+
+	return serviceToken, nil
+}
+
+func extractBearerToken(authHeader string) string {
+	authHeader = strings.TrimSpace(authHeader)
+	if authHeader == "" {
+		return ""
+	}
+
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return ""
+	}
+
+	return strings.TrimSpace(parts[1])
+}
+
 // 全局 SSE 管理器（需要在 main.go 中初始化）
 var globalSSEManager *SSEManagerImpl
 
@@ -438,25 +497,53 @@ func GetGlobalTokenHandler() *TokenHandler {
 
 // SSEManagerImpl SSE 管理器实现
 type SSEManagerImpl struct {
-	clients map[string]map[chan string]bool
+	mu      sync.RWMutex
+	clients map[string]map[chan string]*sseSubscriber
+}
+
+type sseSubscriber struct {
+	clientIP         string
+	firstConnectedAt time.Time
+	lastSeenAt       time.Time
+}
+
+type ConnectionSnapshot struct {
+	IP                string    `json:"ip"`
+	FirstConnectedAt  time.Time `json:"first_connected_at"`
+	LastSeenAt        time.Time `json:"last_seen_at"`
+	ActiveConnections int       `json:"active_connections"`
+}
+
+type subscriberChannel struct {
+	service string
+	env     string
+	channel chan string
 }
 
 // NewSSEManagerImpl 创建 SSE 管理器
 func NewSSEManagerImpl() *SSEManagerImpl {
 	return &SSEManagerImpl{
-		clients: make(map[string]map[chan string]bool),
+		clients: make(map[string]map[chan string]*sseSubscriber),
 	}
 }
 
 // Subscribe 订阅
-func (m *SSEManagerImpl) Subscribe(service, env string) chan string {
+func (m *SSEManagerImpl) Subscribe(service, env, clientIP string) chan string {
 	key := fmt.Sprintf("%s:%s", service, env)
 	ch := make(chan string, 10)
+	now := time.Now()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	if m.clients[key] == nil {
-		m.clients[key] = make(map[chan string]bool)
+		m.clients[key] = make(map[chan string]*sseSubscriber)
 	}
-	m.clients[key][ch] = true
+	m.clients[key][ch] = &sseSubscriber{
+		clientIP:         clientIP,
+		firstConnectedAt: now,
+		lastSeenAt:       now,
+	}
 
 	return ch
 }
@@ -465,30 +552,24 @@ func (m *SSEManagerImpl) Subscribe(service, env string) chan string {
 func (m *SSEManagerImpl) Unsubscribe(service, env string, ch chan string) {
 	key := fmt.Sprintf("%s:%s", service, env)
 
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if clients, ok := m.clients[key]; ok {
 		delete(clients, ch)
 		if len(clients) == 0 {
 			delete(m.clients, key)
 		}
 	}
-
-	close(ch)
 }
 
 // BroadcastConfigChange 广播配置变更
 func (m *SSEManagerImpl) BroadcastConfigChange(service, env string, version int) {
-	key := fmt.Sprintf("%s:%s", service, env)
-
-	clients, ok := m.clients[key]
-	if !ok {
-		return
-	}
-
 	msg := fmt.Sprintf(`{"type":"config_changed","service":"%s","env":"%s","version":%d}`, service, env, version)
-
-	for ch := range clients {
+	for _, subscriber := range m.snapshotSubscribers(service, env) {
 		select {
-		case ch <- msg:
+		case subscriber.channel <- msg:
+			m.markSeen(service, env, subscriber.channel)
 		default:
 		}
 	}
@@ -498,12 +579,106 @@ func (m *SSEManagerImpl) BroadcastConfigChange(service, env string, version int)
 func (m *SSEManagerImpl) BroadcastHeartbeat() {
 	msg := `{"type":"heartbeat"}`
 
-	for _, clients := range m.clients {
+	m.mu.RLock()
+	channels := make([]subscriberChannel, 0)
+	for key, clients := range m.clients {
+		service, env := splitServiceEnvKey(key)
 		for ch := range clients {
-			select {
-			case ch <- msg:
-			default:
-			}
+			channels = append(channels, subscriberChannel{service: service, env: env, channel: ch})
 		}
 	}
+	m.mu.RUnlock()
+
+	for _, subscriber := range channels {
+		select {
+		case subscriber.channel <- msg:
+			m.markSeen(subscriber.service, subscriber.env, subscriber.channel)
+		default:
+		}
+	}
+}
+
+func (m *SSEManagerImpl) snapshotSubscribers(service, env string) []subscriberChannel {
+	key := fmt.Sprintf("%s:%s", service, env)
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	clients, ok := m.clients[key]
+	if !ok {
+		return nil
+	}
+
+	channels := make([]subscriberChannel, 0, len(clients))
+	for ch := range clients {
+		channels = append(channels, subscriberChannel{service: service, env: env, channel: ch})
+	}
+
+	return channels
+}
+
+func (m *SSEManagerImpl) markSeen(service, env string, ch chan string) {
+	key := fmt.Sprintf("%s:%s", service, env)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if clients, ok := m.clients[key]; ok {
+		if subscriber, exists := clients[ch]; exists {
+			subscriber.lastSeenAt = time.Now()
+		}
+	}
+}
+
+func (m *SSEManagerImpl) ListConnections(service, env string) []ConnectionSnapshot {
+	key := fmt.Sprintf("%s:%s", service, env)
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	clients, ok := m.clients[key]
+	if !ok {
+		return nil
+	}
+
+	aggregated := make(map[string]*ConnectionSnapshot)
+	for _, subscriber := range clients {
+		entry, exists := aggregated[subscriber.clientIP]
+		if !exists {
+			aggregated[subscriber.clientIP] = &ConnectionSnapshot{
+				IP:                subscriber.clientIP,
+				FirstConnectedAt:  subscriber.firstConnectedAt,
+				LastSeenAt:        subscriber.lastSeenAt,
+				ActiveConnections: 1,
+			}
+			continue
+		}
+
+		if subscriber.firstConnectedAt.Before(entry.FirstConnectedAt) {
+			entry.FirstConnectedAt = subscriber.firstConnectedAt
+		}
+		if subscriber.lastSeenAt.After(entry.LastSeenAt) {
+			entry.LastSeenAt = subscriber.lastSeenAt
+		}
+		entry.ActiveConnections++
+	}
+
+	snapshots := make([]ConnectionSnapshot, 0, len(aggregated))
+	for _, snapshot := range aggregated {
+		snapshots = append(snapshots, *snapshot)
+	}
+
+	sort.Slice(snapshots, func(i, j int) bool {
+		return snapshots[i].LastSeenAt.After(snapshots[j].LastSeenAt)
+	})
+
+	return snapshots
+}
+
+func splitServiceEnvKey(key string) (string, string) {
+	parts := strings.SplitN(key, ":", 2)
+	if len(parts) != 2 {
+		return key, ""
+	}
+	return parts[0], parts[1]
 }
