@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
-	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"math/big"
 	"strings"
 	"sync"
@@ -27,12 +29,14 @@ type captchaStore struct {
 	mu      sync.Mutex
 	entries map[string]captchaEntry
 	ttl     time.Duration
+	maxSize int
 }
 
 func NewCaptchaStore(ttl time.Duration) *captchaStore {
 	return &captchaStore{
 		entries: make(map[string]captchaEntry),
 		ttl:     ttl,
+		maxSize: 2048,
 	}
 }
 
@@ -56,6 +60,8 @@ func (s *captchaStore) Generate() (*CaptchaPayload, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	s.evictIfNeededLocked()
 
 	s.entries[id] = captchaEntry{
 		code:      code,
@@ -90,6 +96,24 @@ func (s *captchaStore) cleanupExpiredLocked() {
 		if now.After(entry.expiresAt) {
 			delete(s.entries, id)
 		}
+	}
+}
+
+func (s *captchaStore) evictIfNeededLocked() {
+	if s.maxSize <= 0 || len(s.entries) < s.maxSize {
+		return
+	}
+
+	var oldestID string
+	var oldestExpiry time.Time
+	for id, entry := range s.entries {
+		if oldestID == "" || entry.expiresAt.Before(oldestExpiry) {
+			oldestID = id
+			oldestExpiry = entry.expiresAt
+		}
+	}
+	if oldestID != "" {
+		delete(s.entries, oldestID)
 	}
 }
 
@@ -133,54 +157,179 @@ func normalizeCaptchaCode(code string) string {
 }
 
 func buildCaptchaImage(code string) (string, error) {
-	var svg bytes.Buffer
-	svg.WriteString(`<svg xmlns="http://www.w3.org/2000/svg" width="132" height="44" viewBox="0 0 132 44">`)
-	svg.WriteString(`<rect width="132" height="44" rx="6" fill="#f7f9fc"/>`)
-	svg.WriteString(`<rect x="1" y="1" width="130" height="42" rx="5" fill="none" stroke="#d9e2f2"/>`)
+	const width = 132
+	const height = 44
 
-	for i := 0; i < 5; i++ {
-		x1, err := randomRange(4, 120)
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	fillRect(img, 0, 0, width, height, color.RGBA{0xF7, 0xF9, 0xFC, 0xFF})
+	drawBorder(img, color.RGBA{0xD9, 0xE2, 0xF2, 0xFF})
+
+	for i := 0; i < 8; i++ {
+		x1, err := randomRange(4, width-12)
 		if err != nil {
 			return "", err
 		}
-		y1, err := randomRange(6, 38)
+		y1, err := randomRange(4, height-4)
 		if err != nil {
 			return "", err
 		}
-		x2, err := randomRange(12, 128)
+		x2, err := randomRange(4, width-4)
 		if err != nil {
 			return "", err
 		}
-		y2, err := randomRange(6, 38)
+		y2, err := randomRange(4, height-4)
 		if err != nil {
 			return "", err
 		}
-		fmt.Fprintf(&svg, `<line x1="%d" y1="%d" x2="%d" y2="%d" stroke="#c7d6ee" stroke-width="1"/>`, x1, y1, x2, y2)
+		drawLine(img, int(x1), int(y1), int(x2), int(y2), color.RGBA{0xC6, 0xD6, 0xEE, 0xFF})
+	}
+
+	for i := 0; i < 24; i++ {
+		x, err := randomRange(3, width-3)
+		if err != nil {
+			return "", err
+		}
+		y, err := randomRange(3, height-3)
+		if err != nil {
+			return "", err
+		}
+		fillRect(img, int(x), int(y), 2, 2, color.RGBA{0xD1, 0xDE, 0xF2, 0xFF})
 	}
 
 	for i, ch := range code {
-		x := 18 + (i * 26)
-		y, err := randomRange(28, 34)
+		offsetX, err := randomRange(-2, 2)
 		if err != nil {
 			return "", err
 		}
-		rotate, err := randomRange(-15, 15)
+		offsetY, err := randomRange(-2, 2)
 		if err != nil {
 			return "", err
 		}
-		fmt.Fprintf(
-			&svg,
-			`<text x="%d" y="%d" text-anchor="middle" font-size="24" font-weight="700" font-family="Verdana,Arial,sans-serif" fill="#2f5aa8" transform="rotate(%d %d %d)">%c</text>`,
-			x,
-			y,
-			rotate,
-			x,
-			y,
-			ch,
-		)
+		drawDigit(img, 12+(i*28)+int(offsetX), 7+int(offsetY), ch, color.RGBA{0x2F, 0x5A, 0xA8, 0xFF})
 	}
 
-	svg.WriteString(`</svg>`)
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, img); err != nil {
+		return "", err
+	}
 
-	return "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString(svg.Bytes()), nil
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(encoded.Bytes()), nil
+}
+
+func drawDigit(img *image.RGBA, x, y int, ch rune, digitColor color.RGBA) {
+	segments, ok := digitSegments[ch]
+	if !ok {
+		return
+	}
+
+	if segments[0] {
+		fillRect(img, x+4, y, 12, 4, digitColor)
+	}
+	if segments[1] {
+		fillRect(img, x, y+3, 4, 11, digitColor)
+	}
+	if segments[2] {
+		fillRect(img, x+16, y+3, 4, 11, digitColor)
+	}
+	if segments[3] {
+		fillRect(img, x+4, y+12, 12, 4, digitColor)
+	}
+	if segments[4] {
+		fillRect(img, x, y+15, 4, 11, digitColor)
+	}
+	if segments[5] {
+		fillRect(img, x+16, y+15, 4, 11, digitColor)
+	}
+	if segments[6] {
+		fillRect(img, x+4, y+24, 12, 4, digitColor)
+	}
+}
+
+func drawBorder(img *image.RGBA, border color.RGBA) {
+	bounds := img.Bounds()
+	maxX := bounds.Max.X - 1
+	maxY := bounds.Max.Y - 1
+	for x := bounds.Min.X; x <= maxX; x++ {
+		img.SetRGBA(x, bounds.Min.Y, border)
+		img.SetRGBA(x, maxY, border)
+	}
+	for y := bounds.Min.Y; y <= maxY; y++ {
+		img.SetRGBA(bounds.Min.X, y, border)
+		img.SetRGBA(maxX, y, border)
+	}
+}
+
+func fillRect(img *image.RGBA, x, y, width, height int, fill color.RGBA) {
+	bounds := img.Bounds()
+	for px := maxInt(x, bounds.Min.X); px < minInt(x+width, bounds.Max.X); px++ {
+		for py := maxInt(y, bounds.Min.Y); py < minInt(y+height, bounds.Max.Y); py++ {
+			img.SetRGBA(px, py, fill)
+		}
+	}
+}
+
+func drawLine(img *image.RGBA, x1, y1, x2, y2 int, lineColor color.RGBA) {
+	dx := absInt(x2 - x1)
+	dy := -absInt(y2 - y1)
+	sx := -1
+	if x1 < x2 {
+		sx = 1
+	}
+	sy := -1
+	if y1 < y2 {
+		sy = 1
+	}
+	err := dx + dy
+
+	for {
+		if image.Pt(x1, y1).In(img.Bounds()) {
+			img.SetRGBA(x1, y1, lineColor)
+		}
+		if x1 == x2 && y1 == y2 {
+			return
+		}
+		e2 := 2 * err
+		if e2 >= dy {
+			err += dy
+			x1 += sx
+		}
+		if e2 <= dx {
+			err += dx
+			y1 += sy
+		}
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+var digitSegments = map[rune][7]bool{
+	'0': {true, true, true, false, true, true, true},
+	'1': {false, false, true, false, false, true, false},
+	'2': {true, false, true, true, true, false, true},
+	'3': {true, false, true, true, false, true, true},
+	'4': {false, true, true, true, false, true, false},
+	'5': {true, true, false, true, false, true, true},
+	'6': {true, true, false, true, true, true, true},
+	'7': {true, false, true, false, false, true, false},
+	'8': {true, true, true, true, true, true, true},
+	'9': {true, true, true, true, false, true, true},
 }

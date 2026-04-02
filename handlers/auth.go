@@ -3,6 +3,7 @@ package handlers
 import (
 	"config-center/models"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -27,24 +28,35 @@ type ChangePasswordRequest struct {
 
 // AuthHandler 认证处理器
 type AuthHandler struct {
-	db        *gorm.DB
-	jwtSecret string
-	jwtExpire int
-	captchas  *captchaStore
+	db                   *gorm.DB
+	jwtSecret            string
+	jwtExpire            int
+	captchas             *captchaStore
+	captchaLimiter       *requestLimiter
+	loginIPLimiter       *requestLimiter
+	loginCredentialLimit *requestLimiter
 }
 
 // NewAuthHandler 创建认证处理器
 func NewAuthHandler(db *gorm.DB, jwtSecret string, jwtExpire int) *AuthHandler {
 	return &AuthHandler{
-		db:        db,
-		jwtSecret: jwtSecret,
-		jwtExpire: jwtExpire,
-		captchas:  NewCaptchaStore(1 * time.Minute),
+		db:                   db,
+		jwtSecret:            jwtSecret,
+		jwtExpire:            jwtExpire,
+		captchas:             NewCaptchaStore(1 * time.Minute),
+		captchaLimiter:       NewRequestLimiter(30, 1*time.Minute),
+		loginIPLimiter:       NewRequestLimiter(20, 10*time.Minute),
+		loginCredentialLimit: NewRequestLimiter(5, 10*time.Minute),
 	}
 }
 
 // GetCaptcha 获取登录验证码
 func (h *AuthHandler) GetCaptcha(c *gin.Context) {
+	if !h.captchaLimiter.Allow("captcha:" + c.ClientIP()) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "请求过于频繁，请稍后再试"})
+		return
+	}
+
 	captcha, err := h.captchas.Generate()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate captcha"})
@@ -74,6 +86,11 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if !h.allowLoginAttempt(c.ClientIP(), req.Username) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "登录尝试过于频繁，请稍后再试"})
 		return
 	}
 
@@ -144,4 +161,21 @@ func (h *AuthHandler) ChangePassword(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "password changed successfully"})
+}
+
+func (h *AuthHandler) allowLoginAttempt(clientIP, username string) bool {
+	normalizedIP := strings.TrimSpace(clientIP)
+	if normalizedIP == "" {
+		normalizedIP = "unknown"
+	}
+	normalizedUser := strings.ToLower(strings.TrimSpace(username))
+	if normalizedUser == "" {
+		normalizedUser = "unknown"
+	}
+
+	if !h.loginIPLimiter.Allow("ip:" + normalizedIP) {
+		return false
+	}
+
+	return h.loginCredentialLimit.Allow("ip-user:" + normalizedIP + "|" + normalizedUser)
 }
