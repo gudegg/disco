@@ -12,9 +12,15 @@ import (
 
 func main() {
 	// 加载配置
-	cfg, err := LoadConfig("config.yaml")
+	configPath := ResolveConfigPath()
+	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
+	}
+	if configPath == "" {
+		log.Printf("Config file not found, using defaults and environment variables")
+	} else {
+		log.Printf("Using config file: %s", configPath)
 	}
 
 	// 初始化数据库

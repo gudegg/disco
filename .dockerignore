@@ -1,0 +1,14 @@
+.git
+.gitignore
+.idea
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+config.local.yaml
+.env
+.env.*
+!.env.example
+config-center

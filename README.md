@@ -25,9 +25,35 @@
 mysql -u root -p < schema.sql
 ```
 
-### 2. 修改配置
+### 2. 配置方式
 
-编辑 `config.yaml`：
+仓库内提交的是安全示例配置，不要把真实密码和密钥直接写回 Git。
+
+推荐优先级：
+
+1. 本地开发：复制 `config.example.yaml` 为 `config.local.yaml`
+2. Docker / CI：直接使用环境变量
+3. 兜底示例：保留仓库里的 `config.yaml`
+
+程序读取顺序：
+
+1. `CONFIG_FILE` 指定的文件
+2. `config.local.yaml`
+3. `config.yaml`
+4. 环境变量覆盖默认值
+
+环境变量前缀统一为 `CONFIG_CENTER_`，支持：
+
+- `CONFIG_CENTER_SERVER_PORT`
+- `CONFIG_CENTER_DB_HOST`
+- `CONFIG_CENTER_DB_PORT`
+- `CONFIG_CENTER_DB_USER`
+- `CONFIG_CENTER_DB_PASSWORD`
+- `CONFIG_CENTER_DB_NAME`
+- `CONFIG_CENTER_JWT_SECRET`
+- `CONFIG_CENTER_JWT_EXPIRES`
+
+本地配置示例：
 
 ```yaml
 server:
@@ -37,12 +63,16 @@ database:
   host: localhost
   port: 3306
   user: root
-  password: your_password
+  password: change_me
   name: config_center
 
 jwt:
-  secret: your-secret-key
+  secret: change-me-in-production
   expires: 86400
+```
+
+```bash
+cp config.example.yaml config.local.yaml
 ```
 
 ### 3. 运行
@@ -264,27 +294,147 @@ go build -o config-center
 ./config-center
 ```
 
-### Docker 部署
+### Docker Compose
 
-```dockerfile
-FROM golang:1.21-alpine AS builder
-WORKDIR /app
-COPY . .
-RUN go build -o config-center .
+`docker compose` 现在默认只启动后端 `app`，数据库由你自己决定是：
 
-FROM alpine:latest
-RUN apk --no-cache add ca-certificates
-WORKDIR /root/
-COPY --from=builder /app/config-center .
-COPY --from=builder /app/static ./static
-COPY config.yaml .
-EXPOSE 8080
-CMD ["./config-center"]
+- 使用你自己的 MySQL
+- 或者启用项目内置的 `mysql` 服务
+
+#### 方案一：使用你自己的 MySQL
+
+```bash
+cp .env.example .env
+```
+
+`docker compose` 会自动读取项目根目录的 `.env`，并把变量注入到 [docker-compose.yml](/E:/code_go/disco/docker-compose.yml) 中。
+
+先修改 `.env` 中的数据库连接：
+
+```env
+APP_PORT=8080
+DB_HOST=192.168.1.100
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=your-password
+DB_NAME=config_center
+
+MYSQL_PORT=3306
+MYSQL_ROOT_PASSWORD=change_me
+MYSQL_DATABASE=config_center
+JWT_SECRET=change-me-to-a-long-random-string
+JWT_EXPIRES=86400
+```
+
+这里的 `MYSQL_*` 在“外部数据库”模式下不会被用到，可以不用管。
+
+启动后端：
+
+```bash
+docker compose up -d --build
+```
+
+查看状态和日志：
+
+```bash
+docker compose ps
+docker compose logs -f app
+```
+
+#### 方案二：使用 compose 自带 MySQL
+
+如果你不想单独准备数据库，可以启用 `localdb` profile：
+
+```bash
+cp .env.example .env
+docker compose --profile localdb up -d --build
+```
+
+这种模式会启动：
+
+- `app`：配置中心后端
+- `mysql`：MySQL 8.0，并自动执行 `schema.sql`
+
+使用内置 MySQL 时，建议 `.env` 保持这几项一致：
+
+```env
+DB_HOST=mysql
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=change_me
+DB_NAME=config_center
+
+MYSQL_PORT=3306
+MYSQL_ROOT_PASSWORD=change_me
+MYSQL_DATABASE=config_center
+```
+
+查看日志：
+
+```bash
+docker compose --profile localdb logs -f app
+docker compose --profile localdb logs -f mysql
+```
+
+#### 常用命令
+
+停止服务：
+
+```bash
+docker compose down
+```
+
+连同内置 MySQL 数据一起删除：
+
+```bash
+docker compose down -v
+```
+
+说明：
+
+- `mysql` 服务只有在 `--profile localdb` 时才会启动
+- 使用内置 MySQL 时，数据库文件会存到 Docker volume `mysql_data`
+- `schema.sql` 只会在内置 MySQL 的数据目录第一次初始化时自动执行
+- 如果你已经有旧数据，再次 `up` 不会重复导入默认管理员和表结构
+- 如果要重新初始化内置数据库，执行 `docker compose down -v` 后再重新启动
+- 应用容器内部通过环境变量拿配置，不依赖仓库里的 `config.yaml`
+
+如果你只想构建镜像：
+
+```bash
+docker build -t config-center:latest .
+```
+
+单独运行容器时，直接传环境变量：
+
+```bash
+docker run -d \
+  -p 8080:8080 \
+  -e CONFIG_CENTER_DB_HOST=host.docker.internal \
+  -e CONFIG_CENTER_DB_PORT=3306 \
+  -e CONFIG_CENTER_DB_USER=root \
+  -e CONFIG_CENTER_DB_PASSWORD=change_me \
+  -e CONFIG_CENTER_DB_NAME=config_center \
+  -e CONFIG_CENTER_JWT_SECRET=replace-with-a-long-random-secret \
+  --name config-center \
+  config-center:latest
+```
+
+如果你坚持使用文件配置，也可以挂载：
+
+```bash
+docker run -d \
+  -p 8080:8080 \
+  -e CONFIG_FILE=/app/config.local.yaml \
+  -v $(pwd)/config.local.yaml:/app/config.local.yaml:ro \
+  --name config-center \
+  config-center:latest
 ```
 
 ## 注意事项
 
-1. 生产环境请修改 JWT Secret
-2. 建议配置 Nginx 反向代理并启用 HTTPS
-3. 数据库密码请使用强密码
-4. 默认管理员账号密码请及时修改
+1. 不要把真实 `config.local.yaml`、`.env`、数据库密码或 JWT Secret 提交到 GitHub
+2. 生产环境请修改 JWT Secret，并使用足够长的随机值
+3. 建议配置 Nginx 反向代理并启用 HTTPS
+4. 数据库密码请使用强密码
+5. 默认管理员账号密码请及时修改

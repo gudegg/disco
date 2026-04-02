@@ -1,0 +1,40 @@
+services:
+  mysql:
+    profiles: ["localdb"]
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change_me}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-config_center}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD:-change_me}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    environment:
+      CONFIG_CENTER_SERVER_PORT: 8080
+      CONFIG_CENTER_DB_HOST: ${DB_HOST:-mysql}
+      CONFIG_CENTER_DB_PORT: ${DB_PORT:-3306}
+      CONFIG_CENTER_DB_USER: ${DB_USER:-root}
+      CONFIG_CENTER_DB_PASSWORD: ${DB_PASSWORD:-change_me}
+      CONFIG_CENTER_DB_NAME: ${DB_NAME:-config_center}
+      CONFIG_CENTER_JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      CONFIG_CENTER_JWT_EXPIRES: ${JWT_EXPIRES:-86400}
+      GIN_MODE: release
+
+volumes:
+  mysql_data:
