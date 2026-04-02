@@ -1,12 +1,12 @@
 package middleware
 
 import (
-	"config-center/models"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/gudegg/disco/models"
 )
 
 // JWTSecret JWT 密钥（需要在初始化时设置）

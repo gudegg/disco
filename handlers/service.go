@@ -1,10 +1,10 @@
 package handlers
 
 import (
-	"config-center/models"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gudegg/disco/models"
 	"gorm.io/gorm"
 )
 

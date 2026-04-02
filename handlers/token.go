@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"config-center/models"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -10,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gudegg/disco/models"
 	"gorm.io/gorm"
 )
 

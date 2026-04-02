@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"config-center/models"
+	"github.com/gudegg/disco/models"
 )
 
 // SSEManager SSE 连接管理器

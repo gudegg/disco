@@ -1,9 +1,9 @@
 package main
 
 import (
-	"config-center/models"
 	"fmt"
 
+	"github.com/gudegg/disco/models"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"

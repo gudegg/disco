@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"config-center/models"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gudegg/disco/models"
 	"gorm.io/gorm"
 )
 

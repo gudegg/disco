@@ -1,4 +1,4 @@
-module config-center
+module github.com/gudegg/disco
 
 go 1.21
 

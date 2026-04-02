@@ -1,13 +1,13 @@
 package main
 
 import (
-	"config-center/handlers"
-	"config-center/middleware"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gudegg/disco/handlers"
+	"github.com/gudegg/disco/middleware"
 )
 
 func main() {

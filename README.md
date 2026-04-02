@@ -129,7 +129,7 @@ GET /sse/configs?service=xxx&env=xxx   # SSE 订阅配置变更，需 Authorizat
 
 ## 客户端模块
 
-项目内置独立 Go 客户端子模块：`config-center/client`
+项目内置独立 Go 客户端子模块：`github.com/gudegg/disco/client`
 
 客户端会自动完成以下工作：
 
@@ -160,22 +160,14 @@ GET /sse/configs?service=xxx&env=xxx   # SSE 订阅配置变更，需 Authorizat
 当前子模块定义：
 
 ```go
-module config-center/client
+module github.com/gudegg/disco/client
 ```
 
 在其他服务中可以直接：
 
 ```bash
-go get config-center/client
+go get github.com/gudegg/disco/client
 ```
-
-如果你后续把仓库发布到 Git 仓库，建议把客户端子模块的 `module` 改成真实仓库地址，例如：
-
-```go
-module github.com/your-org/config-center/client
-```
-
-这样其他服务就可以直接通过仓库地址依赖。
 
 ### Go 客户端示例
 
@@ -183,9 +175,10 @@ module github.com/your-org/config-center/client
 package main
 
 import (
-    "config-center/client"
     "context"
     "log"
+
+    "github.com/gudegg/disco/client"
 )
 
 type AppConfig struct {
@@ -258,7 +251,7 @@ _, _ = value, ok
 ## 项目结构
 
 ```
-config-center/
+disco/
 ├── client/              # Go 客户端模块
 │   ├── go.mod           # 客户端独立模块定义
 │   ├── client.go        # 客户端封装
