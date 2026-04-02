@@ -13,10 +13,18 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+
+var ErrConfigNotLoaded = errors.New("config not loaded")
+var ErrConfigKeyNotFound = errors.New("config key not found")
+var ErrWatcherAlreadyStarted = errors.New("config watcher already started")
+var ErrListenerKeyRequired = errors.New("listener key is required")
+var ErrListenerRequired = errors.New("listener is required")
 
 type Options struct {
 	ServerURL         string
@@ -34,6 +42,20 @@ type Snapshot struct {
 	Env     string            `json:"env"`
 	Version int               `json:"version"`
 	Configs map[string]string `json:"configs"`
+}
+
+type ChangeEvent struct {
+	Key       string
+	OldValue  string
+	OldExists bool
+	NewValue  string
+	NewExists bool
+	Version   int
+}
+
+type jsonCacheEntry struct {
+	raw   string
+	value any
 }
 
 func (s *Snapshot) Get(key string) (string, bool) {
@@ -66,11 +88,30 @@ type Client struct {
 	opts       Options
 	httpClient *http.Client
 
-	mu      sync.RWMutex
-	current *Snapshot
+	mu             sync.RWMutex
+	current        *Snapshot
+	jsonCache      map[string]map[reflect.Type]jsonCacheEntry
+	listenerMu     sync.RWMutex
+	listeners      map[string]map[uint64]func(ChangeEvent)
+	nextListenerID uint64
+	watchMu        sync.Mutex
+	watching       bool
 }
 
-func New(options Options) (*Client, error) {
+func New(ctx context.Context, options Options) (*Client, error) {
+	client, err := NewLazy(options)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := client.Load(ctx); err != nil {
+		return nil, err
+	}
+	client.emitUpdate(client.Current())
+	client.startBackground(ctx)
+	return client, nil
+}
+
+func NewLazy(options Options) (*Client, error) {
 	options.ServerURL = strings.TrimRight(options.ServerURL, "/")
 	if options.ServerURL == "" {
 		return nil, errors.New("server url is required")
@@ -103,6 +144,104 @@ func (c *Client) Current() *Snapshot {
 	return cloneSnapshot(c.current)
 }
 
+func (c *Client) GetString(key string) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.current == nil {
+		return "", false
+	}
+	return c.current.Get(key)
+}
+
+func (c *Client) MustGetString(key string) string {
+	value, ok := c.GetString(key)
+	if !ok {
+		panic(fmt.Sprintf("config key %q not found", key))
+	}
+	return value
+}
+
+func (c *Client) AddListener(key string, listener func(ChangeEvent)) (func(), error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, ErrListenerKeyRequired
+	}
+	if listener == nil {
+		return nil, ErrListenerRequired
+	}
+
+	c.listenerMu.Lock()
+	defer c.listenerMu.Unlock()
+
+	if c.listeners == nil {
+		c.listeners = make(map[string]map[uint64]func(ChangeEvent))
+	}
+	c.nextListenerID++
+	id := c.nextListenerID
+	if c.listeners[key] == nil {
+		c.listeners[key] = make(map[uint64]func(ChangeEvent))
+	}
+	c.listeners[key][id] = listener
+
+	return func() {
+		c.removeListener(key, id)
+	}, nil
+}
+
+func (c *Client) GetInt(key string) (int, error) {
+	value, err := c.getRequiredValue(key)
+	if err != nil {
+		return 0, err
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("config key %q parse int: %w", key, err)
+	}
+	return parsed, nil
+}
+
+func (c *Client) GetBool(key string) (bool, error) {
+	value, err := c.getRequiredValue(key)
+	if err != nil {
+		return false, err
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("config key %q parse bool: %w", key, err)
+	}
+	return parsed, nil
+}
+
+func (c *Client) GetDuration(key string) (time.Duration, error) {
+	value, err := c.getRequiredValue(key)
+	if err != nil {
+		return 0, err
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("config key %q parse duration: %w", key, err)
+	}
+	return parsed, nil
+}
+
+func (c *Client) DecodeJSON(key string, target any) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.current == nil {
+		return ErrConfigNotLoaded
+	}
+	return c.current.DecodeJSON(key, target)
+}
+
+func (c *Client) Version() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.current == nil {
+		return 0
+	}
+	return c.current.Version
+}
+
 func (c *Client) Load(ctx context.Context) (*Snapshot, error) {
 	requestURL := fmt.Sprintf("%s/api/client/configs/%s/%s", c.opts.ServerURL, url.PathEscape(c.opts.Service), url.PathEscape(c.opts.Env))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
@@ -131,12 +270,25 @@ func (c *Client) Load(ctx context.Context) (*Snapshot, error) {
 }
 
 func (c *Client) Start(ctx context.Context) error {
-	snapshot, err := c.Load(ctx)
-	if err != nil {
-		return err
+	if !c.beginWatching() {
+		return ErrWatcherAlreadyStarted
+	}
+	defer c.endWatching()
+
+	snapshot := c.Current()
+	if snapshot == nil {
+		var err error
+		snapshot, err = c.Load(ctx)
+		if err != nil {
+			return err
+		}
 	}
 	c.emitUpdate(snapshot)
 
+	return c.watch(ctx)
+}
+
+func (c *Client) watch(ctx context.Context) error {
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -153,6 +305,19 @@ func (c *Client) Start(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+func (c *Client) startBackground(ctx context.Context) {
+	if !c.beginWatching() {
+		return
+	}
+
+	go func() {
+		defer c.endWatching()
+		if err := c.watch(ctx); err != nil && ctx.Err() == nil {
+			c.emitError(err)
+		}
+	}()
 }
 
 func (c *Client) subscribeOnce(ctx context.Context) error {
@@ -225,9 +390,15 @@ func (c *Client) handleMessage(ctx context.Context, payload string) error {
 }
 
 func (c *Client) setCurrent(snapshot *Snapshot) {
+	newSnapshot := cloneSnapshot(snapshot)
+
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.current = cloneSnapshot(snapshot)
+	oldSnapshot := c.current
+	c.current = newSnapshot
+	c.jsonCache = make(map[string]map[reflect.Type]jsonCacheEntry)
+	c.mu.Unlock()
+
+	c.notifyListeners(oldSnapshot, newSnapshot)
 }
 
 func (c *Client) emitUpdate(snapshot *Snapshot) {
@@ -245,6 +416,81 @@ func (c *Client) emitError(err error) {
 	}
 }
 
+func (c *Client) removeListener(key string, id uint64) {
+	c.listenerMu.Lock()
+	defer c.listenerMu.Unlock()
+
+	bucket, ok := c.listeners[key]
+	if !ok {
+		return
+	}
+	delete(bucket, id)
+	if len(bucket) == 0 {
+		delete(c.listeners, key)
+	}
+}
+
+func (c *Client) notifyListeners(oldSnapshot, newSnapshot *Snapshot) {
+	type dispatch struct {
+		callback func(ChangeEvent)
+		event    ChangeEvent
+	}
+
+	c.listenerMu.RLock()
+	if len(c.listeners) == 0 {
+		c.listenerMu.RUnlock()
+		return
+	}
+
+	var dispatches []dispatch
+	for key, bucket := range c.listeners {
+		oldValue, oldExists := getSnapshotValue(oldSnapshot, key)
+		newValue, newExists := getSnapshotValue(newSnapshot, key)
+		if oldExists == newExists && oldValue == newValue {
+			continue
+		}
+
+		event := ChangeEvent{
+			Key:       key,
+			OldValue:  oldValue,
+			OldExists: oldExists,
+			NewValue:  newValue,
+			NewExists: newExists,
+		}
+		if newSnapshot != nil {
+			event.Version = newSnapshot.Version
+		}
+
+		for _, callback := range bucket {
+			dispatches = append(dispatches, dispatch{
+				callback: callback,
+				event:    event,
+			})
+		}
+	}
+	c.listenerMu.RUnlock()
+
+	for _, item := range dispatches {
+		item.callback(item.event)
+	}
+}
+
+func (c *Client) beginWatching() bool {
+	c.watchMu.Lock()
+	defer c.watchMu.Unlock()
+	if c.watching {
+		return false
+	}
+	c.watching = true
+	return true
+}
+
+func (c *Client) endWatching() {
+	c.watchMu.Lock()
+	defer c.watchMu.Unlock()
+	c.watching = false
+}
+
 func cloneSnapshot(snapshot *Snapshot) *Snapshot {
 	if snapshot == nil {
 		return nil
@@ -259,6 +505,86 @@ func cloneSnapshot(snapshot *Snapshot) *Snapshot {
 		Version: snapshot.Version,
 		Configs: configs,
 	}
+}
+
+func getSnapshotValue(snapshot *Snapshot, key string) (string, bool) {
+	if snapshot == nil {
+		return "", false
+	}
+	return snapshot.Get(key)
+}
+
+func GetJSON[T any](c *Client, key string) (T, error) {
+	var zero T
+
+	if c == nil {
+		return zero, ErrConfigNotLoaded
+	}
+
+	typeKey := reflect.TypeOf((*T)(nil)).Elem()
+
+	c.mu.RLock()
+	if c.current == nil {
+		c.mu.RUnlock()
+		return zero, ErrConfigNotLoaded
+	}
+
+	raw, ok := c.current.Get(key)
+	if !ok {
+		c.mu.RUnlock()
+		return zero, fmt.Errorf("%w: %s", ErrConfigKeyNotFound, key)
+	}
+
+	if bucket, ok := c.jsonCache[key]; ok {
+		if entry, ok := bucket[typeKey]; ok && entry.raw == raw {
+			if cached, ok := entry.value.(T); ok {
+				c.mu.RUnlock()
+				return cached, nil
+			}
+		}
+	}
+	c.mu.RUnlock()
+
+	var parsed T
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return zero, fmt.Errorf("config key %q parse json: %w", key, err)
+	}
+
+	c.mu.Lock()
+	if c.jsonCache == nil {
+		c.jsonCache = make(map[string]map[reflect.Type]jsonCacheEntry)
+	}
+	if c.jsonCache[key] == nil {
+		c.jsonCache[key] = make(map[reflect.Type]jsonCacheEntry)
+	}
+	c.jsonCache[key][typeKey] = jsonCacheEntry{
+		raw:   raw,
+		value: parsed,
+	}
+	c.mu.Unlock()
+
+	return parsed, nil
+}
+
+func MustGetJSON[T any](c *Client, key string) T {
+	value, err := GetJSON[T](c, key)
+	if err != nil {
+		panic(err)
+	}
+	return value
+}
+
+func (c *Client) getRequiredValue(key string) (string, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.current == nil {
+		return "", ErrConfigNotLoaded
+	}
+	value, ok := c.current.Get(key)
+	if !ok {
+		return "", fmt.Errorf("%w: %s", ErrConfigKeyNotFound, key)
+	}
+	return value, nil
 }
 
 func decrypt(secret, ciphertext string) (string, error) {

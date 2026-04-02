@@ -187,7 +187,7 @@ type AppConfig struct {
 }
 
 func main() {
-    c, err := client.New(client.Options{
+    c, err := client.New(context.Background(), client.Options{
         ServerURL: "http://localhost:8080",
         Service:   "order-service",
         Env:       "prod",
@@ -211,16 +211,15 @@ func main() {
         log.Fatal(err)
     }
 
-    if err := c.Start(context.Background()); err != nil {
-        log.Fatal(err)
-    }
+    dbHost, _ := c.GetString("db.host")
+    log.Printf("initial db.host=%s", dbHost)
 }
 ```
 
 ### 只拉取一次配置
 
 ```go
-c, err := client.New(client.Options{
+c, err := client.New(context.Background(), client.Options{
     ServerURL: "http://localhost:8080",
     Service:   "order-service",
     Env:       "prod",
@@ -230,21 +229,100 @@ if err != nil {
     panic(err)
 }
 
-snapshot, err := c.Load(context.Background())
+value, ok := c.GetString("db.host")
+_, _ = value, ok
+```
+
+### 直接从客户端缓存读取
+
+`New(ctx, options)` 成功后，客户端就已经完成了首轮拉取，并在后台自动维护一份内存缓存，上层可以直接从 `Client` 读取：
+
+```go
+value, ok := c.GetString("db.host")
+fmt.Println(value, ok)
+
+port, err := c.GetInt("http.port")
 if err != nil {
     panic(err)
 }
 
-value, ok := snapshot.Get("db.host")
-_, _ = value, ok
+enabled, err := c.GetBool("feature.enabled")
+if err != nil {
+    panic(err)
+}
+
+timeout, err := c.GetDuration("request.timeout")
+if err != nil {
+    panic(err)
+}
+
+var appConfig AppConfig
+if err := c.DecodeJSON("app.config", &appConfig); err != nil {
+    panic(err)
+}
+
+typedConfig, err := client.GetJSON[AppConfig](c, "app.config")
+if err != nil {
+    panic(err)
+}
+
+fmt.Println(port, enabled, timeout, typedConfig, c.Version())
+```
+
+### 监听某个配置变化
+
+你可以按 key 注册监听器。只有这个 key 的值新增、删除或发生变化时，回调才会触发：
+
+```go
+cancel, err := c.AddListener("db.host", func(event client.ChangeEvent) {
+    fmt.Printf(
+        "db.host changed: old=%q new=%q version=%d\n",
+        event.OldValue,
+        event.NewValue,
+        event.Version,
+    )
+})
+if err != nil {
+    panic(err)
+}
+defer cancel()
+```
+
+### JSON 泛型读取与缓存
+
+如果某个配置项存的是 JSON，客户端可以直接按泛型反序列化，并自动做缓存，避免反复 `json.Unmarshal`：
+
+```go
+type AppConfig struct {
+    Enabled bool   `json:"enabled"`
+    Name    string `json:"name"`
+}
+
+cfg, err := client.GetJSON[AppConfig](c, "app.config")
+if err != nil {
+    panic(err)
+}
+
+fmt.Println(cfg.Enabled, cfg.Name)
 ```
 
 ### 客户端接口说明
 
-- `client.New(options)`：创建客户端
-- `Load(ctx)`：拉取一次最新配置
-- `Start(ctx)`：拉取初始配置并持续订阅更新
+- `client.New(ctx, options)`：创建客户端，立即拉取首轮配置，并自动在后台持续同步
+- `client.NewLazy(options)`：只创建客户端，不主动拉取配置
+- `Load(ctx)`：拉取一次最新配置，并刷新客户端缓存
+- `Start(ctx)`：低层手动模式，阻塞当前 goroutine 持续订阅更新；通常只配合 `NewLazy` 使用
 - `Current()`：获取当前内存中的配置快照
+- `GetString(key)`：直接从客户端缓存读取字符串配置
+- `MustGetString(key)`：直接读取字符串配置，不存在时 panic
+- `GetInt(key)`：直接从客户端缓存读取整型配置
+- `GetBool(key)`：直接从客户端缓存读取布尔配置
+- `GetDuration(key)`：直接从客户端缓存读取时长配置，例如 `5s`、`1m`
+- `DecodeJSON(key, &target)`：直接从客户端缓存读取并解析 JSON 配置
+- `GetJSON[T](client, key)`：按泛型读取并缓存 JSON 配置
+- `MustGetJSON[T](client, key)`：按泛型读取 JSON 配置，失败时 panic
+- `Version()`：获取当前缓存版本号
+- `AddListener(key, callback)`：监听某个配置项的变化，返回取消监听函数
 - `Snapshot.Get(key)`：读取字符串配置
 - `Snapshot.DecodeJSON(key, &target)`：读取并解析 JSON 配置
 

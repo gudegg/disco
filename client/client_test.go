@@ -7,6 +7,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,7 +18,24 @@ import (
 	"time"
 )
 
-func TestClientStart(t *testing.T) {
+type countedConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
+var countedConfigUnmarshalCalls int
+
+func (c *countedConfig) UnmarshalJSON(data []byte) error {
+	type alias countedConfig
+	countedConfigUnmarshalCalls++
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*c = countedConfig(decoded)
+	return nil
+}
+
+func TestClientNewAutoLoadAndWatch(t *testing.T) {
 	token := "test-token"
 
 	var mu sync.Mutex
@@ -32,7 +51,7 @@ func TestClientStart(t *testing.T) {
 			currentVersion := version
 			mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"service":"order-service","env":"prod","version":%d,"configs":{"app.name":"demo","app.json":"{\"enabled\":true}"}}`, currentVersion)
+			fmt.Fprintf(w, `{"service":"order-service","env":"prod","version":%d,"configs":{"app.name":"demo","app.json":"{\"enabled\":true}","app.port":"8080","feature.enabled":"true","request.timeout":"5s"}}`, currentVersion)
 		case r.URL.Path == "/sse/configs":
 			if r.Header.Get("Authorization") != "Bearer "+token {
 				http.Error(w, "missing token", http.StatusUnauthorized)
@@ -73,20 +92,18 @@ func TestClientStart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var snapshots []*Snapshot
-	client, err := New(Options{
+	updates := make(chan *Snapshot, 4)
+	errs := make(chan error, 1)
+	client, err := New(ctx, Options{
 		ServerURL: server.URL,
 		Service:   "order-service",
 		Env:       "prod",
 		Token:     token,
 		OnUpdate: func(snapshot *Snapshot) {
-			snapshots = append(snapshots, snapshot)
-			if len(snapshots) == 2 {
-				cancel()
-			}
+			updates <- snapshot
 		},
 		OnError: func(err error) {
-			t.Fatalf("unexpected error: %v", err)
+			errs <- err
 		},
 		HTTPClient: &http.Client{Timeout: 2 * time.Second},
 	})
@@ -94,8 +111,19 @@ func TestClientStart(t *testing.T) {
 		t.Fatalf("new client failed: %v", err)
 	}
 
-	if err := client.Start(ctx); err != nil {
-		t.Fatalf("start failed: %v", err)
+	var snapshots []*Snapshot
+	for len(snapshots) < 2 {
+		select {
+		case snapshot := <-updates:
+			snapshots = append(snapshots, snapshot)
+			if len(snapshots) == 2 {
+				cancel()
+			}
+		case err := <-errs:
+			t.Fatalf("unexpected error: %v", err)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for updates")
+		}
 	}
 
 	if len(snapshots) != 2 {
@@ -107,15 +135,311 @@ func TestClientStart(t *testing.T) {
 	if snapshots[1].Version != 2 {
 		t.Fatalf("expected updated version 2, got %d", snapshots[1].Version)
 	}
+	if got := client.Version(); got != 2 {
+		t.Fatalf("Version() = %d, want 2", got)
+	}
+	if got, ok := client.GetString("app.name"); !ok || got != "demo" {
+		t.Fatalf("GetString(app.name) = %q, %v, want demo, true", got, ok)
+	}
+	if got, err := client.GetInt("app.port"); err != nil || got != 8080 {
+		t.Fatalf("GetInt(app.port) = %d, %v, want 8080, nil", got, err)
+	}
+	if got, err := client.GetBool("feature.enabled"); err != nil || !got {
+		t.Fatalf("GetBool(feature.enabled) = %v, %v, want true, nil", got, err)
+	}
+	if got, err := client.GetDuration("request.timeout"); err != nil || got != 5*time.Second {
+		t.Fatalf("GetDuration(request.timeout) = %v, %v, want 5s, nil", got, err)
+	}
 
 	var payload struct {
 		Enabled bool `json:"enabled"`
 	}
-	if err := snapshots[1].DecodeJSON("app.json", &payload); err != nil {
+	if err := client.DecodeJSON("app.json", &payload); err != nil {
 		t.Fatalf("decode json failed: %v", err)
 	}
 	if !payload.Enabled {
 		t.Fatalf("expected enabled=true")
+	}
+
+	appCfg, err := GetJSON[countedConfig](client, "app.json")
+	if err != nil {
+		t.Fatalf("GetJSON(app.json) error = %v", err)
+	}
+	if !appCfg.Enabled {
+		t.Fatalf("GetJSON(app.json) enabled = false, want true")
+	}
+}
+
+func TestClientAccessorsRequireLoadedConfig(t *testing.T) {
+	client, err := NewLazy(Options{
+		ServerURL: "http://example.com",
+		Service:   "order-service",
+		Env:       "prod",
+		Token:     "test-token",
+	})
+	if err != nil {
+		t.Fatalf("new client failed: %v", err)
+	}
+
+	if got, ok := client.GetString("app.name"); ok || got != "" {
+		t.Fatalf("GetString() = %q, %v, want empty false", got, ok)
+	}
+	if got := client.Version(); got != 0 {
+		t.Fatalf("Version() = %d, want 0", got)
+	}
+	if _, err := client.GetInt("app.port"); !errors.Is(err, ErrConfigNotLoaded) {
+		t.Fatalf("GetInt() error = %v, want %v", err, ErrConfigNotLoaded)
+	}
+	if _, err := client.GetBool("feature.enabled"); !errors.Is(err, ErrConfigNotLoaded) {
+		t.Fatalf("GetBool() error = %v, want %v", err, ErrConfigNotLoaded)
+	}
+	if _, err := client.GetDuration("request.timeout"); !errors.Is(err, ErrConfigNotLoaded) {
+		t.Fatalf("GetDuration() error = %v, want %v", err, ErrConfigNotLoaded)
+	}
+
+	var payload struct{}
+	if err := client.DecodeJSON("app.json", &payload); !errors.Is(err, ErrConfigNotLoaded) {
+		t.Fatalf("DecodeJSON() error = %v, want %v", err, ErrConfigNotLoaded)
+	}
+}
+
+func TestClientTypedAccessorsParseErrors(t *testing.T) {
+	client, err := NewLazy(Options{
+		ServerURL: "http://example.com",
+		Service:   "order-service",
+		Env:       "prod",
+		Token:     "test-token",
+	})
+	if err != nil {
+		t.Fatalf("new client failed: %v", err)
+	}
+
+	client.setCurrent(&Snapshot{
+		Service: "order-service",
+		Env:     "prod",
+		Version: 1,
+		Configs: map[string]string{
+			"bad.int":      "abc",
+			"bad.bool":     "not-bool",
+			"bad.duration": "later",
+		},
+	})
+
+	if _, err := client.GetInt("missing"); !errors.Is(err, ErrConfigKeyNotFound) {
+		t.Fatalf("GetInt(missing) error = %v, want ErrConfigKeyNotFound", err)
+	}
+	if _, err := client.GetInt("bad.int"); err == nil {
+		t.Fatalf("GetInt(bad.int) error = nil, want parse error")
+	}
+	if _, err := client.GetBool("bad.bool"); err == nil {
+		t.Fatalf("GetBool(bad.bool) error = nil, want parse error")
+	}
+	if _, err := client.GetDuration("bad.duration"); err == nil {
+		t.Fatalf("GetDuration(bad.duration) error = nil, want parse error")
+	}
+}
+
+func TestClientAddListener(t *testing.T) {
+	client, err := NewLazy(Options{
+		ServerURL: "http://example.com",
+		Service:   "order-service",
+		Env:       "prod",
+		Token:     "test-token",
+	})
+	if err != nil {
+		t.Fatalf("new client failed: %v", err)
+	}
+
+	var events []ChangeEvent
+	cancel, err := client.AddListener("app.name", func(event ChangeEvent) {
+		events = append(events, event)
+	})
+	if err != nil {
+		t.Fatalf("AddListener() error = %v", err)
+	}
+
+	client.setCurrent(&Snapshot{
+		Service: "order-service",
+		Env:     "prod",
+		Version: 1,
+		Configs: map[string]string{
+			"app.name": "demo",
+		},
+	})
+	client.setCurrent(&Snapshot{
+		Service: "order-service",
+		Env:     "prod",
+		Version: 2,
+		Configs: map[string]string{
+			"app.name": "demo",
+		},
+	})
+	client.setCurrent(&Snapshot{
+		Service: "order-service",
+		Env:     "prod",
+		Version: 3,
+		Configs: map[string]string{
+			"app.name": "demo-v2",
+		},
+	})
+	client.setCurrent(&Snapshot{
+		Service: "order-service",
+		Env:     "prod",
+		Version: 4,
+		Configs: map[string]string{},
+	})
+
+	cancel()
+
+	client.setCurrent(&Snapshot{
+		Service: "order-service",
+		Env:     "prod",
+		Version: 5,
+		Configs: map[string]string{
+			"app.name": "demo-v3",
+		},
+	})
+
+	if len(events) != 3 {
+		t.Fatalf("listener events = %d, want 3", len(events))
+	}
+	if events[0].OldExists || !events[0].NewExists || events[0].NewValue != "demo" || events[0].Version != 1 {
+		t.Fatalf("first event = %+v", events[0])
+	}
+	if events[1].OldValue != "demo" || events[1].NewValue != "demo-v2" || events[1].Version != 3 {
+		t.Fatalf("second event = %+v", events[1])
+	}
+	if !events[2].OldExists || events[2].NewExists || events[2].OldValue != "demo-v2" || events[2].Version != 4 {
+		t.Fatalf("third event = %+v", events[2])
+	}
+}
+
+func TestClientAddListenerValidation(t *testing.T) {
+	client, err := NewLazy(Options{
+		ServerURL: "http://example.com",
+		Service:   "order-service",
+		Env:       "prod",
+		Token:     "test-token",
+	})
+	if err != nil {
+		t.Fatalf("new client failed: %v", err)
+	}
+
+	if _, err := client.AddListener("", func(ChangeEvent) {}); !errors.Is(err, ErrListenerKeyRequired) {
+		t.Fatalf("AddListener(empty) error = %v, want %v", err, ErrListenerKeyRequired)
+	}
+	if _, err := client.AddListener("app.name", nil); !errors.Is(err, ErrListenerRequired) {
+		t.Fatalf("AddListener(nil) error = %v, want %v", err, ErrListenerRequired)
+	}
+}
+
+func TestClientGetJSONUsesCache(t *testing.T) {
+	countedConfigUnmarshalCalls = 0
+
+	client, err := NewLazy(Options{
+		ServerURL: "http://example.com",
+		Service:   "order-service",
+		Env:       "prod",
+		Token:     "test-token",
+	})
+	if err != nil {
+		t.Fatalf("new client failed: %v", err)
+	}
+
+	client.setCurrent(&Snapshot{
+		Service: "order-service",
+		Env:     "prod",
+		Version: 1,
+		Configs: map[string]string{
+			"app.json": `{"enabled":true}`,
+		},
+	})
+
+	first, err := GetJSON[countedConfig](client, "app.json")
+	if err != nil {
+		t.Fatalf("first GetJSON() error = %v", err)
+	}
+	second, err := GetJSON[countedConfig](client, "app.json")
+	if err != nil {
+		t.Fatalf("second GetJSON() error = %v", err)
+	}
+
+	if !first.Enabled || !second.Enabled {
+		t.Fatalf("cached values = %+v %+v", first, second)
+	}
+	if countedConfigUnmarshalCalls != 1 {
+		t.Fatalf("unmarshal calls = %d, want 1", countedConfigUnmarshalCalls)
+	}
+
+	client.setCurrent(&Snapshot{
+		Service: "order-service",
+		Env:     "prod",
+		Version: 2,
+		Configs: map[string]string{
+			"app.json": `{"enabled":false}`,
+		},
+	})
+
+	third, err := GetJSON[countedConfig](client, "app.json")
+	if err != nil {
+		t.Fatalf("third GetJSON() error = %v", err)
+	}
+	if third.Enabled {
+		t.Fatalf("third GetJSON() enabled = true, want false")
+	}
+	if countedConfigUnmarshalCalls != 2 {
+		t.Fatalf("unmarshal calls after refresh = %d, want 2", countedConfigUnmarshalCalls)
+	}
+}
+
+func TestClientGetJSONValidation(t *testing.T) {
+	client, err := NewLazy(Options{
+		ServerURL: "http://example.com",
+		Service:   "order-service",
+		Env:       "prod",
+		Token:     "test-token",
+	})
+	if err != nil {
+		t.Fatalf("new client failed: %v", err)
+	}
+
+	if _, err := GetJSON[countedConfig](client, "app.json"); !errors.Is(err, ErrConfigNotLoaded) {
+		t.Fatalf("GetJSON() error = %v, want %v", err, ErrConfigNotLoaded)
+	}
+
+	client.setCurrent(&Snapshot{
+		Service: "order-service",
+		Env:     "prod",
+		Version: 1,
+		Configs: map[string]string{
+			"bad.json": "not-json",
+		},
+	})
+
+	if _, err := GetJSON[countedConfig](client, "missing"); !errors.Is(err, ErrConfigKeyNotFound) {
+		t.Fatalf("GetJSON(missing) error = %v, want ErrConfigKeyNotFound", err)
+	}
+	if _, err := GetJSON[countedConfig](client, "bad.json"); err == nil {
+		t.Fatalf("GetJSON(bad.json) error = nil, want parse error")
+	}
+}
+
+func TestClientStartRejectsSecondWatcher(t *testing.T) {
+	client, err := NewLazy(Options{
+		ServerURL: "http://example.com",
+		Service:   "order-service",
+		Env:       "prod",
+		Token:     "test-token",
+	})
+	if err != nil {
+		t.Fatalf("new client failed: %v", err)
+	}
+
+	client.beginWatching()
+	defer client.endWatching()
+
+	if err := client.Start(context.Background()); !errors.Is(err, ErrWatcherAlreadyStarted) {
+		t.Fatalf("Start() error = %v, want %v", err, ErrWatcherAlreadyStarted)
 	}
 }
 
