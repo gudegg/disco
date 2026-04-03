@@ -287,16 +287,19 @@ func (c *Client) Start(ctx context.Context) error {
 	if !c.beginWatching() {
 		return ErrWatcherAlreadyStarted
 	}
-	defer c.endWatching()
 
 	c.initMsgQueue()
-	go c.processMessages(ctx)
+	go func() {
+		defer c.endWatching()
+		c.processMessages(ctx)
+	}()
 
 	snapshot := c.Current()
 	if snapshot == nil {
 		var err error
 		snapshot, err = c.Load(ctx)
 		if err != nil {
+			c.endWatching()
 			return err
 		}
 	}
@@ -335,7 +338,10 @@ func (c *Client) startBackground(ctx context.Context) {
 	}
 
 	c.initMsgQueue()
-	go c.processMessages(ctx)
+	go func() {
+		defer c.endWatching()
+		c.processMessages(ctx)
+	}()
 
 	go func() {
 		defer c.endWatching()
@@ -510,6 +516,10 @@ func (c *Client) endWatching() {
 	if c.msgCh != nil {
 		close(c.msgCh)
 		c.msgCh = nil
+	}
+	if c.watchCancel != nil {
+		c.watchCancel()
+		c.watchCancel = nil
 	}
 }
 

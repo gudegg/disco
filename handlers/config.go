@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -384,7 +385,12 @@ func (h *SSEHandler) HandleSSE(c *gin.Context) {
 
 	// 发送初始连接成功消息（加密）
 	connectedMsg := `{"type":"connected","service":"` + service + `","env":"` + env + `"}`
-	encryptedMsg, _ := encryption.Encrypt(connectedMsg)
+	encryptedMsg, err := encryption.Encrypt(connectedMsg)
+	if err != nil {
+		log.Printf("Failed to encrypt connected message: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "encryption failed"})
+		return
+	}
 	c.SSEvent("message", encryptedMsg)
 	c.Writer.Flush()
 
@@ -398,6 +404,7 @@ func (h *SSEHandler) HandleSSE(c *gin.Context) {
 			// 加密消息
 			encryptedMsg, err := encryption.Encrypt(msg)
 			if err != nil {
+				log.Printf("Failed to encrypt SSE message: %v, dropping message", err)
 				continue
 			}
 			c.SSEvent("message", encryptedMsg)
@@ -575,6 +582,7 @@ func (m *SSEManagerImpl) BroadcastConfigChange(service, env string, version int)
 		case subscriber.channel <- msg:
 			m.markSeen(service, env, subscriber.channel)
 		default:
+			log.Printf("SSE channel full, dropping config_changed for %s:%s", service, env)
 		}
 	}
 }
@@ -598,6 +606,7 @@ func (m *SSEManagerImpl) BroadcastHeartbeat() {
 		case subscriber.channel <- msg:
 			m.markSeen(subscriber.service, subscriber.env, subscriber.channel)
 		default:
+			log.Printf("SSE channel full, dropping heartbeat for %s:%s", subscriber.service, subscriber.env)
 		}
 	}
 }

@@ -68,3 +68,29 @@ func TestSSEManagerListConnections(t *testing.T) {
 		t.Fatalf("ListConnections() after unsubscribe len = %d, want 0", len(got))
 	}
 }
+
+func TestSSEManagerBroadcastChannelFull(t *testing.T) {
+	manager := NewSSEManagerImpl()
+	ch := manager.Subscribe("order-service", "prod", "10.0.0.1")
+	defer manager.Unsubscribe("order-service", "prod", ch)
+
+	// channel buffer size 10; try writing 11 events via broadcast
+	for i := 0; i < 11; i++ {
+		manager.BroadcastConfigChange("order-service", "prod", i+1)
+	}
+
+	count := 0
+	for {
+		select {
+		case <-ch:
+			count++
+		default:
+			goto done
+		}
+	}
+
+done:
+	if count != 10 {
+		t.Fatalf("expected 10 messages in buffered channel, got %d", count)
+	}
+}
