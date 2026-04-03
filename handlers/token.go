@@ -63,15 +63,10 @@ func (h *TokenHandler) GetOrCreateToken(c *gin.Context) {
 		return
 	}
 
-	// 生成新的 token 和 secret key
+	// 生成新的 token
 	tokenStr, err := generateRandomString(32)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
-		return
-	}
-	secretKey, err := generateRandomString(32)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token secret"})
 		return
 	}
 
@@ -79,7 +74,6 @@ func (h *TokenHandler) GetOrCreateToken(c *gin.Context) {
 		ServiceID: serviceID,
 		Env:       env,
 		Token:     tokenStr,
-		SecretKey: secretKey,
 	}
 
 	if err := h.db.Create(&token).Error; err != nil {
@@ -139,15 +133,10 @@ func (h *TokenHandler) RegenerateToken(c *gin.Context) {
 		return
 	}
 
-	// 生成新的 token 和 secret key
+	// 生成新的 token
 	tokenStr, err := generateRandomString(32)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
-		return
-	}
-	secretKey, err := generateRandomString(32)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token secret"})
 		return
 	}
 
@@ -155,7 +144,6 @@ func (h *TokenHandler) RegenerateToken(c *gin.Context) {
 		ServiceID: serviceID,
 		Env:       env,
 		Token:     tokenStr,
-		SecretKey: secretKey,
 	}
 
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
@@ -239,15 +227,6 @@ func (h *TokenHandler) VerifyToken(tokenStr string) (*models.ServiceToken, error
 		return nil, err
 	}
 	return &token, nil
-}
-
-// GetSecretKeyByToken 通过 Token 获取 Secret Key
-func (h *TokenHandler) GetSecretKeyByToken(tokenStr string) (string, error) {
-	var token models.ServiceToken
-	if err := h.db.Where("token = ?", tokenStr).First(&token).Error; err != nil {
-		return "", err
-	}
-	return token.SecretKey, nil
 }
 
 func parseServiceID(raw string) (uint, error) {

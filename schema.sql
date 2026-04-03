@@ -41,7 +41,6 @@ CREATE TABLE IF NOT EXISTS service_tokens (
     service_id INT NOT NULL,
     env VARCHAR(20) NOT NULL,
     token VARCHAR(64) UNIQUE NOT NULL,
-    secret_key VARCHAR(64) NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_service_env (service_id, env),
     INDEX idx_token (token)

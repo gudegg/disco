@@ -66,6 +66,5 @@ type ServiceToken struct {
 	ServiceID uint      `json:"service_id" gorm:"not null;index"`
 	Env       string    `json:"env" gorm:"size:20;not null"`
 	Token     string    `json:"token" gorm:"uniqueIndex;size:64;not null"`
-	SecretKey string    `json:"secret_key" gorm:"size:64;not null"` // 用于加密数据
 	CreatedAt time.Time `json:"created_at"`
 }

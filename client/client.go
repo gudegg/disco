@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -27,14 +28,17 @@ var ErrListenerKeyRequired = errors.New("listener key is required")
 var ErrListenerRequired = errors.New("listener is required")
 
 type Options struct {
-	ServerURL         string
-	Service           string
-	Env               string
-	Token             string
-	HTTPClient        *http.Client
-	ReconnectInterval time.Duration
-	OnUpdate          func(*Snapshot)
-	OnError           func(error)
+	ServerURL             string
+	Service               string
+	Env                   string
+	Token                 string
+	HTTPClient            *http.Client
+	ReconnectInterval     time.Duration
+	MaxReconnectInterval  time.Duration
+	InitialLoadMaxRetries int
+	ProcessQueueSize      int
+	OnUpdate              func(*Snapshot)
+	OnError               func(error)
 }
 
 type Snapshot struct {
@@ -96,6 +100,7 @@ type Client struct {
 	nextListenerID uint64
 	watchMu        sync.Mutex
 	watching       bool
+	msgCh          chan string
 }
 
 func New(ctx context.Context, options Options) (*Client, error) {
@@ -103,7 +108,7 @@ func New(ctx context.Context, options Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := client.Load(ctx); err != nil {
+	if _, err := client.initialLoad(ctx); err != nil {
 		return nil, err
 	}
 	client.emitUpdate(client.Current())
@@ -127,6 +132,15 @@ func NewLazy(options Options) (*Client, error) {
 	}
 	if options.ReconnectInterval <= 0 {
 		options.ReconnectInterval = 3 * time.Second
+	}
+	if options.MaxReconnectInterval <= 0 {
+		options.MaxReconnectInterval = 30 * time.Second
+	}
+	if options.InitialLoadMaxRetries <= 0 {
+		options.InitialLoadMaxRetries = 3
+	}
+	if options.ProcessQueueSize <= 0 {
+		options.ProcessQueueSize = 1024
 	}
 	httpClient := options.HTTPClient
 	if httpClient == nil {
@@ -275,6 +289,9 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 	defer c.endWatching()
 
+	c.initMsgQueue()
+	go c.processMessages(ctx)
+
 	snapshot := c.Current()
 	if snapshot == nil {
 		var err error
@@ -289,6 +306,7 @@ func (c *Client) Start(ctx context.Context) error {
 }
 
 func (c *Client) watch(ctx context.Context) error {
+	var attempt int
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -298,11 +316,15 @@ func (c *Client) watch(ctx context.Context) error {
 				return nil
 			}
 			c.emitError(err)
+			delay := c.nextBackoffDelay(attempt)
+			attempt++
 			select {
 			case <-ctx.Done():
 				return nil
-			case <-time.After(c.opts.ReconnectInterval):
+			case <-time.After(delay):
 			}
+		} else {
+			attempt = 0
 		}
 	}
 }
@@ -311,6 +333,9 @@ func (c *Client) startBackground(ctx context.Context) {
 	if !c.beginWatching() {
 		return
 	}
+
+	c.initMsgQueue()
+	go c.processMessages(ctx)
 
 	go func() {
 		defer c.endWatching()
@@ -332,6 +357,7 @@ func (c *Client) subscribeOnce(ctx context.Context) error {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.opts.Token)
+	req.Header.Set("Accept", "text/event-stream")
 	resp, err := c.streamHTTPClient().Do(req)
 	if err != nil {
 		return err
@@ -357,10 +383,13 @@ func (c *Client) subscribeOnce(ctx context.Context) error {
 		}
 		payload, err := decrypt(c.opts.Token, encrypted)
 		if err != nil {
-			return err
+			c.emitError(err)
+			continue
 		}
-		if err := c.handleMessage(ctx, payload); err != nil {
-			return err
+		select {
+		case c.msgCh <- payload:
+		default:
+			c.emitError(errors.New("message queue full"))
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -478,6 +507,10 @@ func (c *Client) endWatching() {
 	c.watchMu.Lock()
 	defer c.watchMu.Unlock()
 	c.watching = false
+	if c.msgCh != nil {
+		close(c.msgCh)
+		c.msgCh = nil
+	}
 }
 
 func cloneSnapshot(snapshot *Snapshot) *Snapshot {
@@ -609,4 +642,73 @@ func decrypt(secret, ciphertext string) (string, error) {
 		return "", err
 	}
 	return string(plaintext), nil
+}
+
+func (c *Client) nextBackoffDelay(attempt int) time.Duration {
+	base := c.opts.ReconnectInterval
+	max := c.opts.MaxReconnectInterval
+	if base <= 0 {
+		base = 3 * time.Second
+	}
+	if max <= 0 {
+		max = 30 * time.Second
+	}
+	if attempt < 0 {
+		attempt = 0
+	}
+	if attempt > 8 {
+		attempt = 8
+	}
+	d := base << attempt
+	if d > max {
+		d = max
+	}
+	j := time.Duration(rand.Int63n(int64(d / 3)))
+	if j > d {
+		j = 0
+	}
+	return d - j
+}
+
+func (c *Client) initMsgQueue() {
+	if c.msgCh == nil {
+		c.msgCh = make(chan string, c.opts.ProcessQueueSize)
+	}
+}
+
+func (c *Client) processMessages(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case payload, ok := <-c.msgCh:
+			if !ok {
+				return
+			}
+			if err := c.handleMessage(ctx, payload); err != nil {
+				c.emitError(err)
+			}
+		}
+	}
+}
+
+func (c *Client) initialLoad(ctx context.Context) (*Snapshot, error) {
+	var lastErr error
+	for i := 0; i < c.opts.InitialLoadMaxRetries; i++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		s, err := c.Load(ctx)
+		if err == nil {
+			return s, nil
+		}
+		lastErr = err
+		delay := c.nextBackoffDelay(i)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return nil, lastErr
 }
