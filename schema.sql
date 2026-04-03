@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS configs (
     config_key VARCHAR(100) NOT NULL,
     config_value TEXT NOT NULL,
     config_type VARCHAR(20) DEFAULT 'string',
+    description VARCHAR(500),
     version INT DEFAULT 1,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,

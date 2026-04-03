@@ -28,15 +28,16 @@ const (
 
 // Config 配置模型
 type Config struct {
-	ID        uint      `json:"id" gorm:"primaryKey"`
-	ServiceID uint      `json:"service_id" gorm:"not null;index"`
-	Env       string    `json:"env" gorm:"size:20;not null;index"`
-	Key       string    `json:"key" gorm:"column:config_key;size:100;not null"`
-	Value     string    `json:"value" gorm:"column:config_value;type:text;not null"`
-	Type      string    `json:"type" gorm:"size:20;default:'string'"` // string 或 json
-	Version   int       `json:"version" gorm:"default:1"`
-	UpdatedAt time.Time `json:"updated_at"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          uint      `json:"id" gorm:"primaryKey"`
+	ServiceID   uint      `json:"service_id" gorm:"not null;index"`
+	Env         string    `json:"env" gorm:"size:20;not null;index"`
+	Key         string    `json:"key" gorm:"column:config_key;size:100;not null"`
+	Value       string    `json:"value" gorm:"column:config_value;type:text;not null"`
+	Type        string    `json:"type" gorm:"size:20;default:'string'"`
+	Description string    `json:"description" gorm:"size:500"`
+	Version     int       `json:"version" gorm:"default:1"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // TableName 指定表名

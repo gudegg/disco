@@ -108,6 +108,11 @@
                     <el-table :data="configs" border style="width: 100%" v-loading="configLoading">
                         <el-table-column prop="id" label="ID" width="80"></el-table-column>
                         <el-table-column prop="key" label="Key"></el-table-column>
+                        <el-table-column prop="description" label="描述" width="150">
+                            <template #default="scope">
+                                <span>{{ scope.row.description || '-' }}</span>
+                            </template>
+                        </el-table-column>
                         <el-table-column prop="type" label="类型" width="100">
                             <template #default="scope">
                                 <el-tag :type="scope.row.type === 'json' ? 'success' : ''">{{ scope.row.type }}</el-tag>
@@ -115,9 +120,14 @@
                         </el-table-column>
                         <el-table-column prop="value" label="Value">
                             <template #default="scope">
-                                <el-tooltip :content="scope.row.value" placement="top">
-                                    <span style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block;">{{ scope.row.value }}</span>
-                                </el-tooltip>
+                                <el-popover trigger="hover" :width="600" :show-after="300">
+                                    <template #default>
+                                        <pre style="max-height: 400px; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 0; font-size: 12px; line-height: 1.5;">{{ formatTooltipValue(scope.row.value, scope.row.type) }}</pre>
+                                    </template>
+                                    <template #reference>
+                                        <span style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; cursor: pointer;">{{ scope.row.value }}</span>
+                                    </template>
+                                </el-popover>
                             </template>
                         </el-table-column>
                         <el-table-column prop="version" label="版本" width="80"></el-table-column>
@@ -162,6 +172,9 @@
                 <el-form-item label="Key" prop="key">
                     <el-input v-model="configForm.key" placeholder="如：db.host"></el-input>
                 </el-form-item>
+                <el-form-item label="描述" prop="description">
+                    <el-input v-model="configForm.description" type="textarea" placeholder="配置描述（可选）"></el-input>
+                </el-form-item>
                 <el-form-item label="类型" prop="type">
                     <el-radio-group v-model="configForm.type" @change="onTypeChange">
                         <el-radio label="string">String</el-radio>
@@ -194,6 +207,9 @@
             <el-form :model="editForm" :rules="editRules" ref="editRef" label-width="80px">
                 <el-form-item label="Key">
                     <el-input v-model="editForm.key" disabled></el-input>
+                </el-form-item>
+                <el-form-item label="描述" prop="description">
+                    <el-input v-model="editForm.description" type="textarea" placeholder="配置描述（可选）"></el-input>
                 </el-form-item>
                 <el-form-item label="类型" prop="type">
                     <el-radio-group v-model="editForm.type" @change="onEditTypeChange">
@@ -331,7 +347,7 @@
                 const showAddConfig = ref(false);
                 const configAddLoading = ref(false);
                 const configRef = ref(null);
-                const configForm = reactive({ key: '', value: '', type: 'string' });
+                const configForm = reactive({ key: '', value: '', type: 'string', description: '' });
                 const configRules = {
                     key: [{ required: true, message: '请输入Key', trigger: 'blur' }],
                     value: [{ required: true, message: '请输入Value', trigger: 'blur' }],
@@ -342,7 +358,7 @@
                 const showEditConfig = ref(false);
                 const configEditLoading = ref(false);
                 const editRef = ref(null);
-                const editForm = reactive({ id: '', key: '', value: '', type: 'string' });
+                const editForm = reactive({ id: '', key: '', value: '', type: 'string', description: '' });
                 const editRules = {
                     value: [{ required: true, message: '请输入Value', trigger: 'blur' }],
                     type: [{ required: true, message: '请选择类型', trigger: 'blur' }]
@@ -905,7 +921,8 @@
                                 env: selectedEnv.value,
                                 key: configForm.key,
                                 value: configForm.value,
-                                type: configForm.type
+                                type: configForm.type,
+                                description: configForm.description
                             })
                         });
                         ElMessage.success('添加成功');
@@ -913,6 +930,8 @@
                         configForm.key = '';
                         configForm.value = '';
                         configForm.type = 'string';
+                        configForm.description = '';
+                        configForm.description = '';
                         loadConfigs();
                     } catch (error) {
                         ElMessage.error(error.message);
@@ -927,6 +946,7 @@
                     editForm.key = row.key;
                     editForm.value = row.value;
                     editForm.type = row.type || 'string';
+                    editForm.description = row.description || '';
                     showEditConfig.value = true;
                 };
 
@@ -941,7 +961,8 @@
                             method: 'PUT',
                             body: JSON.stringify({ 
                                 value: editForm.value,
-                                type: editForm.type
+                                type: editForm.type,
+                                description: editForm.description
                             })
                         });
                         ElMessage.success('更新成功');
@@ -973,6 +994,19 @@
                     if (!dateStr) return '';
                     const date = new Date(dateStr);
                     return date.toLocaleString('zh-CN');
+                };
+
+                // 格式化 tooltip 值（JSON 类型格式化显示）
+                const formatTooltipValue = (value, type) => {
+                    if (type === 'json') {
+                        try {
+                            const obj = JSON.parse(value);
+                            return JSON.stringify(obj, null, 2);
+                        } catch (e) {
+                            return value;
+                        }
+                    }
+                    return value;
                 };
 
                 onMounted(() => {
@@ -1063,7 +1097,8 @@
                     onTypeChange,
                     onEditTypeChange,
                     handleAddConfigOpened,
-                    handleEditConfigOpened
+                    handleEditConfigOpened,
+                    formatTooltipValue
                 };
             }
         }).use(ElementPlus).mount('#app');

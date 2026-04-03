@@ -27,17 +27,19 @@ type SSEManager interface {
 
 // CreateConfigRequest 创建配置请求
 type CreateConfigRequest struct {
-	ServiceID uint   `json:"service_id" binding:"required"`
-	Env       string `json:"env" binding:"required,min=1,max=20"`
-	Key       string `json:"key" binding:"required,min=1,max=100"`
-	Value     string `json:"value" binding:"required"`
-	Type      string `json:"type" binding:"required,oneof=string json"`
+	ServiceID   uint   `json:"service_id" binding:"required"`
+	Env         string `json:"env" binding:"required,min=1,max=20"`
+	Key         string `json:"key" binding:"required,min=1,max=100"`
+	Value       string `json:"value" binding:"required"`
+	Type        string `json:"type" binding:"required,oneof=string json"`
+	Description string `json:"description"`
 }
 
 // UpdateConfigRequest 更新配置请求
 type UpdateConfigRequest struct {
-	Value string `json:"value" binding:"required"`
-	Type  string `json:"type" binding:"omitempty,oneof=string json"`
+	Value       string `json:"value" binding:"required"`
+	Type        string `json:"type" binding:"omitempty,oneof=string json"`
+	Description string `json:"description"`
 }
 
 // validateJSON 验证 JSON 格式
@@ -168,12 +170,13 @@ func (h *ConfigHandler) Create(c *gin.Context) {
 	}
 
 	config := models.Config{
-		ServiceID: req.ServiceID,
-		Env:       req.Env,
-		Key:       req.Key,
-		Value:     req.Value,
-		Type:      req.Type,
-		Version:   1,
+		ServiceID:   req.ServiceID,
+		Env:         req.Env,
+		Key:         req.Key,
+		Value:       req.Value,
+		Type:        req.Type,
+		Description: req.Description,
+		Version:     1,
 	}
 
 	if err := h.db.Create(&config).Error; err != nil {
@@ -226,6 +229,7 @@ func (h *ConfigHandler) Update(c *gin.Context) {
 	if req.Type != "" {
 		config.Type = req.Type
 	}
+	config.Description = req.Description
 	config.Version++
 
 	if err := h.db.Save(&config).Error; err != nil {

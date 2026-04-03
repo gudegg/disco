@@ -663,7 +663,11 @@ func (c *Client) nextBackoffDelay(attempt int) time.Duration {
 	if d > max {
 		d = max
 	}
-	j := time.Duration(rand.Int63n(int64(d / 3)))
+	jitterDiv := d / 3
+	if jitterDiv <= 0 {
+		jitterDiv = 1
+	}
+	j := time.Duration(rand.Int63n(int64(jitterDiv)))
 	if j > d {
 		j = 0
 	}
