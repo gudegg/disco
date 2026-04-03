@@ -866,10 +866,40 @@
                 };
 
                 const copyToken = () => {
-                    if (currentToken.value?.token) {
-                        navigator.clipboard.writeText(currentToken.value.token);
-                        ElMessage.success('Token已复制到剪贴板');
+                    if (!currentToken.value?.token) {
+                        ElMessage.warning('Token 不存在');
+                        return;
                     }
+
+                    // 优先使用现代 API
+                    if (navigator.clipboard && window.isSecureContext) {
+                        navigator.clipboard.writeText(currentToken.value.token).then(() => {
+                            ElMessage.success('Token已复制到剪贴板');
+                        }).catch(err => {
+                            console.error('Clipboard API failed:', err);
+                            fallbackCopyToken(currentToken.value.token);
+                        });
+                    } else {
+                        // 降级方案
+                        fallbackCopyToken(currentToken.value.token);
+                    }
+                };
+
+                // 降级复制方法
+                const fallbackCopyToken = (text) => {
+                    const textarea = document.createElement('textarea');
+                    textarea.value = text;
+                    textarea.style.position = 'fixed';
+                    textarea.style.opacity = '0';
+                    document.body.appendChild(textarea);
+                    textarea.select();
+                    try {
+                        document.execCommand('copy');
+                        ElMessage.success('Token已复制到剪贴板');
+                    } catch (err) {
+                        ElMessage.error('复制失败，请手动复制');
+                    }
+                    document.body.removeChild(textarea);
                 };
 
                 watch([showTokenManager, tokenEnv, currentService], ([visible, env, service]) => {
