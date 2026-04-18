@@ -1,4 +1,4 @@
-FROM golang:1.21-alpine AS builder
+FROM docker.1ms.run/golang:1.21-alpine AS builder
 
 WORKDIR /src
 
