@@ -562,7 +562,7 @@
                             setTimeout(createAddEditor, 0);
                         }
                     } else {
-                        fetchCaptcha();                        if (addEditor) {
+                        if (addEditor) {
                             configForm.value = addEditor.getValue();
                             addEditor.dispose();
                             addEditor = null;
@@ -579,7 +579,7 @@
                             setTimeout(createEditEditor, 0);
                         }
                     } else {
-                        fetchCaptcha();                        if (editEditor) {
+                        if (editEditor) {
                             editForm.value = editEditor.getValue();
                             editEditor.dispose();
                             editEditor = null;
@@ -691,7 +691,7 @@
                         captchaImage.value = data.image;
                     } catch (error) {
                         if (error.isAuthError) return;
-captchaImage.value = '';
+                        captchaImage.value = '';
                         ElMessage.error(error.message);
                     }
                 };
@@ -715,8 +715,8 @@ captchaImage.value = '';
                         loadServices();
                     } catch (error) {
                         if (error.isAuthError) return;
-ElMessage.error(error.message);
-fetchCaptcha();
+                        ElMessage.error(error.message);
+                        fetchCaptcha();
                     } finally {
                         loading.value = false;
                     }
@@ -727,6 +727,7 @@ fetchCaptcha();
                     localStorage.removeItem('token');
                     localStorage.removeItem('username');
                     isLoggedIn.value = false;
+                    fetchCaptcha();
                 };
 
                 // 修改密码
@@ -749,7 +750,7 @@ fetchCaptcha();
                         }, 1500);
                     } catch (error) {
                         if (error.isAuthError) return;
-ElMessage.error(error.message);
+                        ElMessage.error(error.message);
                     } finally {
                         passwordLoading.value = false;
                     }
@@ -761,7 +762,7 @@ ElMessage.error(error.message);
                         services.value = await request(`${API_BASE}/services`);
                     } catch (error) {
                         if (error.isAuthError) return;
-ElMessage.error(error.message);
+                        ElMessage.error(error.message);
                     }
                 };
 
@@ -783,7 +784,7 @@ ElMessage.error(error.message);
                         loadServices();
                     } catch (error) {
                         if (error.isAuthError) return;
-ElMessage.error(error.message);
+                        ElMessage.error(error.message);
                     } finally {
                         serviceLoading.value = false;
                     }
@@ -798,7 +799,7 @@ ElMessage.error(error.message);
                         loadServices();
                     } catch (error) {
                         if (error.isAuthError) return;
-if (error !== 'cancel') {
+                        if (error !== 'cancel') {
                             ElMessage.error(error.message);
                         }
                     }
@@ -823,7 +824,7 @@ if (error !== 'cancel') {
                         currentToken.value = data;
                     } catch (error) {
                         if (error.isAuthError) return;
-currentToken.value = null;
+                        currentToken.value = null;
                     }
                 };
 
@@ -838,7 +839,7 @@ currentToken.value = null;
                         connections.value = data.connections || [];
                     } catch (error) {
                         if (error.isAuthError) return;
-connections.value = [];
+                        connections.value = [];
                         ElMessage.error(error.message);
                     } finally {
                         connectionsLoading.value = false;
@@ -870,7 +871,7 @@ connections.value = [];
                         ElMessage.success('Token获取成功');
                     } catch (error) {
                         if (error.isAuthError) return;
-ElMessage.error(error.message);
+                        ElMessage.error(error.message);
                     } finally {
                         tokenLoading.value = false;
                     }
@@ -887,7 +888,7 @@ ElMessage.error(error.message);
                         ElMessage.success('Token重新生成成功');
                     } catch (error) {
                         if (error.isAuthError) return;
-if (error !== 'cancel') {
+                        if (error !== 'cancel') {
                             ElMessage.error(error.message);
                         }
                     }
@@ -908,7 +909,7 @@ if (error !== 'cancel') {
                             fallbackCopyToken(currentToken.value.token);
                         });
                     } else {
-                        fetchCaptcha();                        // 降级方案
+                        // 降级方案
                         fallbackCopyToken(currentToken.value.token);
                     }
                 };
@@ -957,7 +958,7 @@ if (error !== 'cancel') {
                         configs.value = await request(`${API_BASE}/configs/${selectedService.value}/${selectedEnv.value}`);
                     } catch (error) {
                         if (error.isAuthError) return;
-ElMessage.error(error.message);
+                        ElMessage.error(error.message);
                     } finally {
                         configLoading.value = false;
                     }
@@ -993,7 +994,7 @@ ElMessage.error(error.message);
                         loadConfigs();
                     } catch (error) {
                         if (error.isAuthError) return;
-ElMessage.error(error.message);
+                        ElMessage.error(error.message);
                     } finally {
                         configAddLoading.value = false;
                     }
@@ -1029,7 +1030,7 @@ ElMessage.error(error.message);
                         loadConfigs();
                     } catch (error) {
                         if (error.isAuthError) return;
-ElMessage.error(error.message);
+                        ElMessage.error(error.message);
                     } finally {
                         configEditLoading.value = false;
                     }
@@ -1044,7 +1045,7 @@ ElMessage.error(error.message);
                         loadConfigs();
                     } catch (error) {
                         if (error.isAuthError) return;
-if (error !== 'cancel') {
+                        if (error !== 'cancel') {
                             ElMessage.error(error.message);
                         }
                     }
@@ -1075,7 +1076,8 @@ if (error !== 'cancel') {
                     if (isLoggedIn.value) {
                         loadServices();
                     } else {
-                        fetchCaptcha();                    }
+                        fetchCaptcha();
+                    }
                 });
 
                 return {
@@ -1165,7 +1167,5 @@ if (error !== 'cancel') {
     </script>
 </body>
 </html>
-
-
 
 
