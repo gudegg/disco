@@ -32,3 +32,4 @@ config-center
 config.local.yaml
 .kilo
 .spec-workflow
+.claude

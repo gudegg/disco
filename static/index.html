@@ -315,6 +315,13 @@
                 // 登录相关
                 const isLoggedIn = ref(!!localStorage.getItem('token'));
                 const username = ref(localStorage.getItem('username') || '');
+                // 跨标签页同步登出
+                window.addEventListener('storage', (e) => {
+                    if (e.key === 'token' && e.newValue === null) {
+                        isLoggedIn.value = false;
+                        username.value = '';
+                    }
+                });
                 const loading = ref(false);
                 const loginRef = ref(null);
                 const captchaImage = ref('');
@@ -555,7 +562,7 @@
                             setTimeout(createAddEditor, 0);
                         }
                     } else {
-                        if (addEditor) {
+                        fetchCaptcha();                        if (addEditor) {
                             configForm.value = addEditor.getValue();
                             addEditor.dispose();
                             addEditor = null;
@@ -572,7 +579,7 @@
                             setTimeout(createEditEditor, 0);
                         }
                     } else {
-                        if (editEditor) {
+                        fetchCaptcha();                        if (editEditor) {
                             editForm.value = editEditor.getValue();
                             editEditor.dispose();
                             editEditor = null;
@@ -657,6 +664,18 @@
                         headers
                     });
 
+                    // 401 未授权：token 过期或无效，自动退出到登录页
+                    if (response.status === 401) {
+                        localStorage.removeItem('token');
+                        localStorage.removeItem('username');
+                        isLoggedIn.value = false;
+                        username.value = '';
+                        ElMessage.error('登录已过期，请重新登录');
+                        const authError = new Error('unauthorized');
+                        authError.isAuthError = true;
+                        throw authError;
+                    }
+
                     const data = await response.json();
                     if (!response.ok) {
                         throw new Error(data.error || '请求失败');
@@ -671,7 +690,8 @@
                         loginForm.captcha_code = '';
                         captchaImage.value = data.image;
                     } catch (error) {
-                        captchaImage.value = '';
+                        if (error.isAuthError) return;
+captchaImage.value = '';
                         ElMessage.error(error.message);
                     }
                 };
@@ -694,8 +714,9 @@
                         ElMessage.success('登录成功');
                         loadServices();
                     } catch (error) {
-                        ElMessage.error(error.message);
-                        fetchCaptcha();
+                        if (error.isAuthError) return;
+ElMessage.error(error.message);
+fetchCaptcha();
                     } finally {
                         loading.value = false;
                     }
@@ -706,7 +727,6 @@
                     localStorage.removeItem('token');
                     localStorage.removeItem('username');
                     isLoggedIn.value = false;
-                    fetchCaptcha();
                 };
 
                 // 修改密码
@@ -728,7 +748,8 @@
                             logout();
                         }, 1500);
                     } catch (error) {
-                        ElMessage.error(error.message);
+                        if (error.isAuthError) return;
+ElMessage.error(error.message);
                     } finally {
                         passwordLoading.value = false;
                     }
@@ -739,7 +760,8 @@
                     try {
                         services.value = await request(`${API_BASE}/services`);
                     } catch (error) {
-                        ElMessage.error(error.message);
+                        if (error.isAuthError) return;
+ElMessage.error(error.message);
                     }
                 };
 
@@ -760,7 +782,8 @@
                         serviceForm.description = '';
                         loadServices();
                     } catch (error) {
-                        ElMessage.error(error.message);
+                        if (error.isAuthError) return;
+ElMessage.error(error.message);
                     } finally {
                         serviceLoading.value = false;
                     }
@@ -774,7 +797,8 @@
                         ElMessage.success('删除成功');
                         loadServices();
                     } catch (error) {
-                        if (error !== 'cancel') {
+                        if (error.isAuthError) return;
+if (error !== 'cancel') {
                             ElMessage.error(error.message);
                         }
                     }
@@ -798,7 +822,8 @@
                         const data = await request(`${API_BASE}/tokens/${currentService.value.id}/${tokenEnv.value}`);
                         currentToken.value = data;
                     } catch (error) {
-                        currentToken.value = null;
+                        if (error.isAuthError) return;
+currentToken.value = null;
                     }
                 };
 
@@ -812,7 +837,8 @@
                         const data = await request(`${API_BASE}/tokens/${currentService.value.id}/${tokenEnv.value}/connections`);
                         connections.value = data.connections || [];
                     } catch (error) {
-                        connections.value = [];
+                        if (error.isAuthError) return;
+connections.value = [];
                         ElMessage.error(error.message);
                     } finally {
                         connectionsLoading.value = false;
@@ -843,7 +869,8 @@
                         loadConnections();
                         ElMessage.success('Token获取成功');
                     } catch (error) {
-                        ElMessage.error(error.message);
+                        if (error.isAuthError) return;
+ElMessage.error(error.message);
                     } finally {
                         tokenLoading.value = false;
                     }
@@ -859,7 +886,8 @@
                         loadConnections();
                         ElMessage.success('Token重新生成成功');
                     } catch (error) {
-                        if (error !== 'cancel') {
+                        if (error.isAuthError) return;
+if (error !== 'cancel') {
                             ElMessage.error(error.message);
                         }
                     }
@@ -880,7 +908,7 @@
                             fallbackCopyToken(currentToken.value.token);
                         });
                     } else {
-                        // 降级方案
+                        fetchCaptcha();                        // 降级方案
                         fallbackCopyToken(currentToken.value.token);
                     }
                 };
@@ -928,7 +956,8 @@
                     try {
                         configs.value = await request(`${API_BASE}/configs/${selectedService.value}/${selectedEnv.value}`);
                     } catch (error) {
-                        ElMessage.error(error.message);
+                        if (error.isAuthError) return;
+ElMessage.error(error.message);
                     } finally {
                         configLoading.value = false;
                     }
@@ -963,7 +992,8 @@
                         configForm.description = '';
                         loadConfigs();
                     } catch (error) {
-                        ElMessage.error(error.message);
+                        if (error.isAuthError) return;
+ElMessage.error(error.message);
                     } finally {
                         configAddLoading.value = false;
                     }
@@ -998,7 +1028,8 @@
                         showEditConfig.value = false;
                         loadConfigs();
                     } catch (error) {
-                        ElMessage.error(error.message);
+                        if (error.isAuthError) return;
+ElMessage.error(error.message);
                     } finally {
                         configEditLoading.value = false;
                     }
@@ -1012,7 +1043,8 @@
                         ElMessage.success('删除成功');
                         loadConfigs();
                     } catch (error) {
-                        if (error !== 'cancel') {
+                        if (error.isAuthError) return;
+if (error !== 'cancel') {
                             ElMessage.error(error.message);
                         }
                     }
@@ -1043,8 +1075,7 @@
                     if (isLoggedIn.value) {
                         loadServices();
                     } else {
-                        fetchCaptcha();
-                    }
+                        fetchCaptcha();                    }
                 });
 
                 return {
@@ -1134,3 +1165,7 @@
     </script>
 </body>
 </html>
+
+
+
+
