@@ -120,14 +120,17 @@
                         </el-table-column>
                         <el-table-column prop="value" label="Value">
                             <template #default="scope">
-                                <el-popover trigger="hover" :width="600" :show-after="300">
-                                    <template #default>
-                                        <pre style="max-height: 400px; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 0; font-size: 12px; line-height: 1.5;">{{ formatTooltipValue(scope.row.value, scope.row.type) }}</pre>
-                                    </template>
-                                    <template #reference>
-                                        <span style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; cursor: pointer;">{{ scope.row.value }}</span>
-                                    </template>
-                                </el-popover>
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <el-popover trigger="hover" :width="600" :show-after="300">
+                                        <template #default>
+                                            <pre style="max-height: 400px; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 0; font-size: 12px; line-height: 1.5;">{{ formatTooltipValue(scope.row.value, scope.row.type) }}</pre>
+                                        </template>
+                                        <template #reference>
+                                            <span style="max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; cursor: pointer;">{{ scope.row.value }}</span>
+                                        </template>
+                                    </el-popover>
+                                    <el-button type="text" :icon="DocumentCopy" @click="copyConfigValue(scope.row.value)" style="padding: 4px;" title="复制"></el-button>
+                                </div>
                             </template>
                         </el-table-column>
                         <el-table-column prop="version" label="版本" width="80"></el-table-column>
@@ -306,7 +309,7 @@
     <script>
         const { createApp, ref, reactive, onMounted, watch } = Vue;
         const { ElMessage, ElMessageBox } = ElementPlus;
-        const { Plus, RefreshRight, User, Lock, Key } = ElementPlusIconsVue;
+        const { Plus, RefreshRight, User, Lock, Key, DocumentCopy } = ElementPlusIconsVue;
 
         const API_BASE = '/api';
 
@@ -914,6 +917,40 @@
                     }
                 };
 
+                const copyConfigValue = (value) => {
+                    if (!value) {
+                        ElMessage.warning('值不存在');
+                        return;
+                    }
+
+                    if (navigator.clipboard && window.isSecureContext) {
+                        navigator.clipboard.writeText(value).then(() => {
+                            ElMessage.success('已复制到剪贴板');
+                        }).catch(err => {
+                            console.error('Clipboard API failed:', err);
+                            fallbackCopyValue(value);
+                        });
+                    } else {
+                        fallbackCopyValue(value);
+                    }
+                };
+
+                const fallbackCopyValue = (text) => {
+                    const textarea = document.createElement('textarea');
+                    textarea.value = text;
+                    textarea.style.position = 'fixed';
+                    textarea.style.opacity = '0';
+                    document.body.appendChild(textarea);
+                    textarea.select();
+                    try {
+                        document.execCommand('copy');
+                        ElMessage.success('已复制到剪贴板');
+                    } catch (err) {
+                        ElMessage.error('复制失败，请手动复制');
+                    }
+                    document.body.removeChild(textarea);
+                };
+
                 // 降级复制方法
                 const fallbackCopyToken = (text) => {
                     const textarea = document.createElement('textarea');
@@ -1160,7 +1197,9 @@
                     onEditTypeChange,
                     handleAddConfigOpened,
                     handleEditConfigOpened,
-                    formatTooltipValue
+                    formatTooltipValue,
+                    copyConfigValue,
+                    DocumentCopy
                 };
             }
         }).use(ElementPlus).mount('#app');
