@@ -4,12 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>配置中心</title>
-    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <script src="https://unpkg.com/element-plus/dist/index.full.js"></script>
-    <script src="https://unpkg.com/@element-plus/icons-vue"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/element-plus/dist/index.css">
+    <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/element-plus/dist/index.full.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@element-plus/icons-vue"></script>
     <!-- Monaco Editor -->
-    <script src="https://unpkg.com/monaco-editor@0.44.0/min/vs/loader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs/loader.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; }
@@ -386,7 +386,7 @@
 
                 // 初始化 Monaco Editor
                 const initMonaco = () => {
-                    require.config({ paths: { 'vs': 'https://unpkg.com/monaco-editor@0.44.0/min/vs' }});
+                    require.config({ paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs' }});
                     require(['vs/editor/editor.main'], () => {
                         // 编辑器已加载
                     });
@@ -651,7 +651,52 @@
                 const connectionsLoading = ref(false);
                 let tokenMonitorTimer = null;
 
-                // HTTP 请求封装
+                // 公开接口请求（登录/验证码），不附带 Authorization，也不走 401 强制登出
+                const publicRequest = async (url, options = {}) => {
+                    const headers = {
+                        'Content-Type': 'application/json',
+                        ...options.headers
+                    };
+
+                    const response = await fetch(url, {
+                        ...options,
+                        headers
+                    });
+
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok) {
+                        throw new Error(data.error || '请求失败');
+                    }
+                    return data;
+                };
+
+                // 进入登录页时统一重置登录态并拉取验证码（并发 401 只处理一次）
+                let enteringLoginPage = false;
+                const enterLoginPage = (message) => {
+                    const wasLoggedIn = isLoggedIn.value || !!localStorage.getItem('token');
+                    if (enteringLoginPage && !wasLoggedIn) {
+                        return;
+                    }
+                    enteringLoginPage = true;
+                    localStorage.removeItem('token');
+                    localStorage.removeItem('username');
+                    isLoggedIn.value = false;
+                    username.value = '';
+                    if (typeof stopTokenMonitor === 'function') {
+                        stopTokenMonitor();
+                    }
+                    showTokenManager.value = false;
+                    if (message && wasLoggedIn) {
+                        ElMessage.error(message);
+                    }
+                    Promise.resolve()
+                        .then(() => fetchCaptcha())
+                        .finally(() => {
+                            enteringLoginPage = false;
+                        });
+                };
+
+                // HTTP 请求封装（需鉴权接口）
                 const request = async (url, options = {}) => {
                     const token = localStorage.getItem('token');
                     const headers = {
@@ -667,19 +712,15 @@
                         headers
                     });
 
-                    // 401 未授权：token 过期或无效，自动退出到登录页
+                    // 401 未授权：token 过期或无效，自动退出到登录页并刷新验证码
                     if (response.status === 401) {
-                        localStorage.removeItem('token');
-                        localStorage.removeItem('username');
-                        isLoggedIn.value = false;
-                        username.value = '';
-                        ElMessage.error('登录已过期，请重新登录');
+                        enterLoginPage('登录已过期，请重新登录');
                         const authError = new Error('unauthorized');
                         authError.isAuthError = true;
                         throw authError;
                     }
 
-                    const data = await response.json();
+                    const data = await response.json().catch(() => ({}));
                     if (!response.ok) {
                         throw new Error(data.error || '请求失败');
                     }
@@ -688,14 +729,13 @@
 
                 const fetchCaptcha = async () => {
                     try {
-                        const data = await request(`${API_BASE}/auth/captcha`);
+                        const data = await publicRequest(`${API_BASE}/auth/captcha`);
                         loginForm.captcha_id = data.id;
                         loginForm.captcha_code = '';
                         captchaImage.value = data.image;
                     } catch (error) {
-                        if (error.isAuthError) return;
                         captchaImage.value = '';
-                        ElMessage.error(error.message);
+                        ElMessage.error(error.message || '验证码加载失败');
                     }
                 };
 
@@ -706,7 +746,7 @@
 
                     loading.value = true;
                     try {
-                        const data = await request(`${API_BASE}/auth/login`, {
+                        const data = await publicRequest(`${API_BASE}/auth/login`, {
                             method: 'POST',
                             body: JSON.stringify(loginForm)
                         });
@@ -717,7 +757,6 @@
                         ElMessage.success('登录成功');
                         loadServices();
                     } catch (error) {
-                        if (error.isAuthError) return;
                         ElMessage.error(error.message);
                         fetchCaptcha();
                     } finally {
@@ -727,10 +766,7 @@
 
                 // 退出
                 const logout = () => {
-                    localStorage.removeItem('token');
-                    localStorage.removeItem('username');
-                    isLoggedIn.value = false;
-                    fetchCaptcha();
+                    enterLoginPage();
                 };
 
                 // 修改密码
