@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -87,10 +88,9 @@ func LoadConfig(path string) (*Config, error) {
 			if !errors.Is(err, os.ErrNotExist) {
 				return nil, err
 			}
-			return nil, err
-		}
-
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			// 配置文件不存在时回退到默认配置（文件被删除等场景）
+			log.Printf("Config file %s not found, using defaults and environment variables", path)
+		} else if err := yaml.Unmarshal(data, &cfg); err != nil {
 			return nil, err
 		}
 	}

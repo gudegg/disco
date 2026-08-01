@@ -318,7 +318,11 @@ func (c *Client) watch(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			c.emitError(err)
+			// SSE 流正常结束时返回 io.EOF（如服务端关闭连接），属于预期情况，
+			// 触发重连即可，不向上报错误。
+			if !errors.Is(err, io.EOF) {
+				c.emitError(err)
+			}
 			delay := c.nextBackoffDelay(attempt)
 			attempt++
 			select {
@@ -516,10 +520,6 @@ func (c *Client) endWatching() {
 	if c.msgCh != nil {
 		close(c.msgCh)
 		c.msgCh = nil
-	}
-	if c.watchCancel != nil {
-		c.watchCancel()
-		c.watchCancel = nil
 	}
 }
 
