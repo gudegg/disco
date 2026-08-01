@@ -56,11 +56,30 @@ func (h *ServiceHandler) Create(c *gin.Context) {
 	c.JSON(http.StatusOK, service)
 }
 
-// Delete 删除服务
+// Delete 删除服务（事务级联删除关联的配置和 Token）
 func (h *ServiceHandler) Delete(c *gin.Context) {
 	id := c.Param("id")
 
-	if err := h.db.Delete(&models.Service{}, id).Error; err != nil {
+	// 先检查服务是否存在
+	var service models.Service
+	if err := h.db.First(&service, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "service not found"})
+		return
+	}
+
+	// 事务级联删除：configs -> service_tokens -> service
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("service_id = ?", service.ID).Delete(&models.Config{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("service_id = ?", service.ID).Delete(&models.ServiceToken{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&service).Error; err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete service"})
 		return
 	}
