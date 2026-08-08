@@ -75,6 +75,7 @@ func main() {
 			authorized.POST("/configs", configHandler.Create)
 			authorized.POST("/configs/import", configHandler.Import)
 			authorized.PUT("/configs/:id", configHandler.Update)
+			authorized.DELETE("/configs/batch", configHandler.BatchDelete)
 			authorized.DELETE("/configs/:id", configHandler.Delete)
 			authorized.GET("/configs/:service/envs", configHandler.GetEnvs)
 

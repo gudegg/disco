@@ -50,6 +50,11 @@ type ImportConfigRequest struct {
 	Data      map[string]interface{} `json:"data" binding:"required"`
 }
 
+// BatchDeleteConfigRequest 批量删除配置请求
+type BatchDeleteConfigRequest struct {
+	IDs []uint `json:"ids" binding:"required,min=1"`
+}
+
 // validateJSON 验证 JSON 格式
 func validateJSON(s string) bool {
 	var js interface{}
@@ -374,6 +379,52 @@ func (h *ConfigHandler) Delete(c *gin.Context) {
 	h.sseManager.BroadcastConfigChange(service.Name, config.Env, config.Version+1)
 
 	c.JSON(http.StatusOK, gin.H{"message": "config deleted"})
+}
+
+// BatchDelete 批量删除配置
+func (h *ConfigHandler) BatchDelete(c *gin.Context) {
+	var req BatchDeleteConfigRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 先查出待删配置所属的服务与环境（用于广播）
+	var configs []models.Config
+	if err := h.db.Where("id IN ?", req.IDs).Find(&configs).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch configs"})
+		return
+	}
+
+	// 只删除实际存在的配置，避免返回数虚高
+	deletedIDs := make([]uint, 0, len(configs))
+	for _, cfg := range configs {
+		deletedIDs = append(deletedIDs, cfg.ID)
+	}
+
+	if len(deletedIDs) > 0 {
+		if err := h.db.Delete(&models.Config{}, "id IN ?", deletedIDs).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete configs"})
+			return
+		}
+	}
+
+	// 按 服务/环境 去重广播一次变更
+	broadcasted := make(map[string]bool)
+	for _, cfg := range configs {
+		var service models.Service
+		if err := h.db.First(&service, cfg.ServiceID).Error; err != nil {
+			continue
+		}
+		key := fmt.Sprintf("%s:%s", service.Name, cfg.Env)
+		if broadcasted[key] {
+			continue
+		}
+		broadcasted[key] = true
+		h.sseManager.BroadcastConfigChange(service.Name, cfg.Env, cfg.Version+1)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"deleted": len(configs)})
 }
 
 // GetEnvs 获取环境列表

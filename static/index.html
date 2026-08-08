@@ -105,9 +105,11 @@
                         </el-select>
                         <el-button type="primary" @click="showAddConfig = true" :disabled="!selectedService || !selectedEnv" :icon="Plus">添加配置</el-button>
                         <el-button type="success" @click="showImportConfig = true" :disabled="!selectedService || !selectedEnv" :icon="Upload">导入JSON</el-button>
+                        <el-button type="danger" @click="batchDeleteConfigs" :disabled="selectedConfigs.length === 0" :icon="Delete">批量删除{{ selectedConfigs.length ? ` (${selectedConfigs.length})` : '' }}</el-button>
                         <el-button @click="loadConfigs" :icon="RefreshRight">刷新</el-button>
                     </div>
-                    <el-table :data="configs" border style="width: 100%" v-loading="configLoading">
+                    <el-table :data="configs" border style="width: 100%" v-loading="configLoading" @selection-change="handleConfigSelectionChange">
+                        <el-table-column type="selection" width="55"></el-table-column>
                         <el-table-column prop="id" label="ID" width="80"></el-table-column>
                         <el-table-column prop="key" label="Key"></el-table-column>
                         <el-table-column prop="description" label="描述" width="150">
@@ -334,7 +336,7 @@
     <script>
         const { createApp, ref, reactive, onMounted, watch } = Vue;
         const { ElMessage, ElMessageBox } = ElementPlus;
-        const { Plus, RefreshRight, User, Lock, Key, DocumentCopy, Upload } = ElementPlusIconsVue;
+        const { Plus, RefreshRight, User, Lock, Key, DocumentCopy, Upload, Delete } = ElementPlusIconsVue;
 
         const API_BASE = '/api';
 
@@ -379,6 +381,7 @@
                 const envs = ref(['dev', 'test', 'prod']);
                 const configs = ref([]);
                 const configLoading = ref(false);
+                const selectedConfigs = ref([]);
                 const showAddConfig = ref(false);
                 const configAddLoading = ref(false);
                 const configRef = ref(null);
@@ -1233,6 +1236,32 @@
                     }
                 };
 
+                // 表格勾选变化
+                const handleConfigSelectionChange = (rows) => {
+                    selectedConfigs.value = rows;
+                };
+
+                // 批量删除配置
+                const batchDeleteConfigs = async () => {
+                    if (selectedConfigs.value.length === 0) return;
+                    try {
+                        await ElMessageBox.confirm(`确定要删除选中的 ${selectedConfigs.value.length} 条配置吗？`, '提示', { type: 'warning' });
+                        const ids = selectedConfigs.value.map(r => r.id);
+                        const data = await request(`${API_BASE}/configs/batch`, {
+                            method: 'DELETE',
+                            body: JSON.stringify({ ids })
+                        });
+                        ElMessage.success(`删除成功：${data.deleted} 条`);
+                        selectedConfigs.value = [];
+                        loadConfigs();
+                    } catch (error) {
+                        if (error.isAuthError) return;
+                        if (error !== 'cancel') {
+                            ElMessage.error(error.message);
+                        }
+                    }
+                };
+
                 // 格式化日期
                 const formatDate = (dateStr) => {
                     if (!dateStr) return '';
@@ -1325,6 +1354,9 @@
                     editRules,
                     updateConfig,
                     deleteConfig,
+                    selectedConfigs,
+                    handleConfigSelectionChange,
+                    batchDeleteConfigs,
                     onServiceChange,
                     loadConfigs,
                     formatDate,
@@ -1334,6 +1366,7 @@
                     Lock,
                     Key,
                     Upload,
+                    Delete,
                     // Monaco Editor 相关
                     addEditorRef,
                     editEditorRef,

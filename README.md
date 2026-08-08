@@ -119,6 +119,15 @@ POST   /api/configs               # 创建配置
 POST   /api/configs/import        # 批量导入配置（JSON 一级 key 作为配置 key）
 PUT    /api/configs/:id           # 更新配置
 DELETE /api/configs/:id           # 删除配置
+DELETE /api/configs/batch         # 批量删除配置
+```
+
+批量删除示例：
+
+```bash
+DELETE /api/configs/batch
+{"ids": [1, 2, 3]}
+# 返回：{"deleted": 3}
 ```
 
 批量导入示例（JSON 一级 key 即配置 Key，对象/数组值自动识别为 JSON 类型，已存在的 Key 会被跳过）：
