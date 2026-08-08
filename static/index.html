@@ -32,6 +32,7 @@
         .json-editor { height: 300px; border: 1px solid #dcdfe6; border-radius: 4px; width: 100%; min-width: 0; overflow: hidden; }
         .json-editor-error { border-color: #f56c6c; }
         .editor-toolbar { margin-bottom: 10px; display: flex; gap: 10px; flex-wrap: wrap; }
+        .import-json-input textarea { font-family: 'Consolas', 'Monaco', 'Courier New', monospace; }
     </style>
 </head>
 <body>
@@ -103,6 +104,7 @@
                             <el-option v-for="env in envs" :key="env" :label="env" :value="env"></el-option>
                         </el-select>
                         <el-button type="primary" @click="showAddConfig = true" :disabled="!selectedService || !selectedEnv" :icon="Plus">添加配置</el-button>
+                        <el-button type="success" @click="showImportConfig = true" :disabled="!selectedService || !selectedEnv" :icon="Upload">导入JSON</el-button>
                         <el-button @click="loadConfigs" :icon="RefreshRight">刷新</el-button>
                     </div>
                     <el-table :data="configs" border style="width: 100%" v-loading="configLoading">
@@ -202,6 +204,29 @@
             <template #footer>
                 <el-button @click="showAddConfig = false">取消</el-button>
                 <el-button type="primary" @click="addConfig" :loading="configAddLoading" :disabled="configForm.type === 'json' && !jsonValid">确定</el-button>
+            </template>
+        </el-dialog>
+
+        <!-- 导入配置对话框 -->
+        <el-dialog v-model="showImportConfig" title="导入配置 (JSON)" width="700px" @opened="onImportDialogOpened">
+            <el-form label-width="80px">
+                <el-form-item label="环境">
+                    <el-tag>{{ selectedEnv }}</el-tag>
+                </el-form-item>
+                <el-form-item label="JSON">
+                    <el-input v-model="importConfigText" type="textarea" :rows="14" placeholder='{"db.host": "localhost", "app.config": {"enabled": true}}' class="import-json-input"></el-input>
+                    <div style="margin-top: 6px; font-size: 12px; color: #909399; line-height: 1.6;">
+                        JSON 一级 key 将作为配置 Key，对象/数组值自动识别为 JSON 类型，已存在的 Key 将被跳过。
+                        <template v-if="importPreviewCount >= 0">
+                            共识别 <b>{{ importPreviewCount }}</b> 个配置项。
+                        </template>
+                    </div>
+                    <div v-if="importError" style="margin-top: 6px; font-size: 12px; color: #f56c6c;">{{ importError }}</div>
+                </el-form-item>
+            </el-form>
+            <template #footer>
+                <el-button @click="showImportConfig = false">取消</el-button>
+                <el-button type="primary" @click="importConfig" :loading="importConfigLoading" :disabled="!!importError || importPreviewCount < 0">导入</el-button>
             </template>
         </el-dialog>
 
@@ -309,7 +334,7 @@
     <script>
         const { createApp, ref, reactive, onMounted, watch } = Vue;
         const { ElMessage, ElMessageBox } = ElementPlus;
-        const { Plus, RefreshRight, User, Lock, Key, DocumentCopy } = ElementPlusIconsVue;
+        const { Plus, RefreshRight, User, Lock, Key, DocumentCopy, Upload } = ElementPlusIconsVue;
 
         const API_BASE = '/api';
 
@@ -363,6 +388,13 @@
                     value: [{ required: true, message: '请输入Value', trigger: 'blur' }],
                     type: [{ required: true, message: '请选择类型', trigger: 'blur' }]
                 };
+
+                // 导入配置
+                const showImportConfig = ref(false);
+                const importConfigLoading = ref(false);
+                const importConfigText = ref('');
+                const importError = ref('');
+                const importPreviewCount = ref(-1);
 
                 // 编辑配置
                 const showEditConfig = ref(false);
@@ -1073,6 +1105,83 @@
                     }
                 };
 
+                // 实时校验导入 JSON 并预览配置项数量
+                watch(importConfigText, () => {
+                    const text = importConfigText.value.trim();
+                    if (!text) {
+                        importError.value = '';
+                        importPreviewCount.value = -1;
+                        return;
+                    }
+                    try {
+                        const obj = JSON.parse(text);
+                        if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
+                            importError.value = '顶层必须是 JSON 对象';
+                            importPreviewCount.value = -1;
+                            return;
+                        }
+                        importError.value = '';
+                        importPreviewCount.value = Object.keys(obj).length;
+                    } catch (e) {
+                        importError.value = 'JSON 格式错误: ' + e.message;
+                        importPreviewCount.value = -1;
+                    }
+                });
+
+                const onImportDialogOpened = () => {
+                    importConfigText.value = '';
+                    importError.value = '';
+                    importPreviewCount.value = -1;
+                };
+
+                // 批量导入配置
+                const importConfig = async () => {
+                    if (importError.value) {
+                        ElMessage.error(importError.value);
+                        return;
+                    }
+                    if (importPreviewCount.value <= 0) {
+                        ElMessage.warning('请先粘贴 JSON 内容');
+                        return;
+                    }
+                    const service = services.value.find(s => s.name === selectedService.value);
+                    if (!service) return;
+
+                    try {
+                        await ElMessageBox.confirm(
+                            `将从 JSON 中导入 ${importPreviewCount.value} 个配置项到「${selectedService.value} / ${selectedEnv.value}」，已存在的 Key 将被跳过。是否继续？`,
+                            '确认导入',
+                            { type: 'warning' }
+                        );
+                    } catch (error) {
+                        if (error !== 'cancel') throw error;
+                        return;
+                    }
+
+                    importConfigLoading.value = true;
+                    try {
+                        const data = await request(`${API_BASE}/configs/import`, {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                service_id: service.id,
+                                env: selectedEnv.value,
+                                data: JSON.parse(importConfigText.value)
+                            })
+                        });
+                        ElMessage.success(`导入完成：新增 ${data.imported} 条，跳过 ${data.skipped} 条`);
+                        showImportConfig.value = false;
+                        importConfigText.value = '';
+                        importPreviewCount.value = -1;
+                        importError.value = '';
+                        loadConfigs();
+                    } catch (error) {
+                        if (error.isAuthError) return;
+                        ElMessage.error(error.message);
+                    } finally {
+                        importConfigLoading.value = false;
+                    }
+                };
+
                 // 编辑配置
                 const editConfig = (row) => {
                     editForm.id = row.id;
@@ -1202,6 +1311,12 @@
                     configForm,
                     configRules,
                     addConfig,
+                    showImportConfig,
+                    importConfigLoading,
+                    importConfigText,
+                    importError,
+                    importPreviewCount,
+                    importConfig,
                     editConfig,
                     showEditConfig,
                     configEditLoading,
@@ -1218,6 +1333,7 @@
                     User,
                     Lock,
                     Key,
+                    Upload,
                     // Monaco Editor 相关
                     addEditorRef,
                     editEditorRef,

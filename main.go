@@ -73,6 +73,7 @@ func main() {
 			// 配置管理
 			authorized.GET("/configs/:service/:env", configHandler.List)
 			authorized.POST("/configs", configHandler.Create)
+			authorized.POST("/configs/import", configHandler.Import)
 			authorized.PUT("/configs/:id", configHandler.Update)
 			authorized.DELETE("/configs/:id", configHandler.Delete)
 			authorized.GET("/configs/:service/envs", configHandler.GetEnvs)

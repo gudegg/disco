@@ -116,8 +116,25 @@ DELETE /api/services/:id          # 删除服务
 ```bash
 GET    /api/configs/:service/:env # 获取配置列表
 POST   /api/configs               # 创建配置
+POST   /api/configs/import        # 批量导入配置（JSON 一级 key 作为配置 key）
 PUT    /api/configs/:id           # 更新配置
 DELETE /api/configs/:id           # 删除配置
+```
+
+批量导入示例（JSON 一级 key 即配置 Key，对象/数组值自动识别为 JSON 类型，已存在的 Key 会被跳过）：
+
+```bash
+POST /api/configs/import
+{
+  "service_id": 1,
+  "env": "prod",
+  "data": {
+    "db.host": "localhost",
+    "db.port": 3306,
+    "app.config": {"enabled": true}
+  }
+}
+# 返回：{"imported": 3, "skipped": 0}
 ```
 
 ### 客户端接口

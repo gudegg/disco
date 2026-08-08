@@ -43,10 +43,32 @@ type UpdateConfigRequest struct {
 	Description string `json:"description"`
 }
 
+// ImportConfigRequest 批量导入配置请求
+type ImportConfigRequest struct {
+	ServiceID uint                   `json:"service_id" binding:"required"`
+	Env       string                 `json:"env" binding:"required,min=1,max=20"`
+	Data      map[string]interface{} `json:"data" binding:"required"`
+}
+
 // validateJSON 验证 JSON 格式
 func validateJSON(s string) bool {
 	var js interface{}
 	return json.Unmarshal([]byte(s), &js) == nil
+}
+
+// configValueFromJSON 将 JSON 值转换为配置存储值与类型。
+// 字符串按原样存储为 string；对象/数组序列化后存为 json 类型；其余标量（数字/布尔/null）序列化后存为 string。
+func configValueFromJSON(v interface{}) (string, string) {
+	switch val := v.(type) {
+	case string:
+		return val, models.ConfigTypeString
+	case map[string]interface{}, []interface{}:
+		b, _ := json.Marshal(val)
+		return string(b), models.ConfigTypeJSON
+	default:
+		b, _ := json.Marshal(val)
+		return string(b), models.ConfigTypeString
+	}
 }
 
 // Encryption 加密工具
@@ -189,6 +211,86 @@ func (h *ConfigHandler) Create(c *gin.Context) {
 	h.sseManager.BroadcastConfigChange(service.Name, req.Env, config.Version)
 
 	c.JSON(http.StatusOK, config)
+}
+
+// Import 批量导入配置（JSON 一级 key 作为配置 key，已存在的 key 跳过）
+func (h *ConfigHandler) Import(c *gin.Context) {
+	var req ImportConfigRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if len(req.Data) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "data must be a non-empty JSON object"})
+		return
+	}
+
+	// 检查服务是否存在
+	var service models.Service
+	if err := h.db.First(&service, req.ServiceID).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "service not found"})
+		return
+	}
+
+	// 收集已存在的 key
+	var existingKeys []string
+	if err := h.db.Model(&models.Config{}).
+		Where("service_id = ? AND env = ?", service.ID, req.Env).
+		Pluck("config_key", &existingKeys).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch existing configs"})
+		return
+	}
+	existing := make(map[string]bool, len(existingKeys))
+	for _, k := range existingKeys {
+		existing[k] = true
+	}
+
+	// 排序保证导入顺序稳定
+	keys := make([]string, 0, len(req.Data))
+	for k := range req.Data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	configs := make([]models.Config, 0, len(keys))
+	skipped := 0
+	for _, key := range keys {
+		if existing[key] {
+			skipped++
+			continue
+		}
+		value, configType := configValueFromJSON(req.Data[key])
+		configs = append(configs, models.Config{
+			ServiceID: service.ID,
+			Env:       req.Env,
+			Key:       key,
+			Value:     value,
+			Type:      configType,
+			Version:   1,
+		})
+	}
+
+	if len(configs) > 0 {
+		if err := h.db.Create(&configs).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to import configs"})
+			return
+		}
+
+		// 广播配置变更（使用当前最大版本）
+		maxVersion := 1
+		if err := h.db.Model(&models.Config{}).
+			Select("COALESCE(MAX(version), 0)").
+			Where("service_id = ? AND env = ?", service.ID, req.Env).
+			Scan(&maxVersion).Error; err == nil {
+			h.sseManager.BroadcastConfigChange(service.Name, req.Env, maxVersion)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"imported": len(configs),
+		"skipped":  skipped,
+	})
 }
 
 // Update 更新配置
